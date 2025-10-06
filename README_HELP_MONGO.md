@@ -18,6 +18,7 @@ Esta guía proporciona una referencia rápida y clara de los comandos más utili
       - [Operadores de comparación](#operadores-de-comparación)
       - [Operadores Logicos](#operadores-logicos)
       - [Operadores de Elemento](#operadores-de-elemento)
+      - [Operadores de Evaluacion](#operadores-de-evaluacion)
       - [Consultas anidadas con operadores de comparación](#consultas-anidadas-con-operadores-de-comparación)
     - [✏️ Actualizaciones](#️-actualizaciones)
     - [🗑️ Eliminación](#️-eliminación)
@@ -224,6 +225,39 @@ db.employee.find({ age:{$exists:false }}  );
 
 // Mostrar los que existen y agregar otro operador adicional
 db.employee.find({ age:{$exists:true, $gt: 35 }}  );
+```
+
+- **$type** _Consultar por tipo de datos_
+```js
+//Buscar por tipo de dato entero (Number)
+db.employee.find( { homePhone:{$type:"number" } } );
+
+// Buscar por varios tipo de datos, (Entero y cadena)
+db.employee.find({homePhone:{$type:["number","string"]}  });
+```
+
+#### Operadores de Evaluacion
+
+- **$regex** _Buscar coincidencias_
+```js
+// Buscar coincidencias por la cadena de texto
+db.employee.find( {description:{$regex:"travel"  } } );
+
+// Buscar coincidencias sin importar mayusculas o minusculas
+db.employee.find( {title:{$regex:"Support",$options:"i"  } } );
+
+// Buscar documentos que empiecen por (And)
+db.employee.find( { firstName:{$regex:"^And"}} );
+
+// Buscar documentos que terminen por (y)
+db.employee.find( { firstName:{$regex:"y$"}} );
+
+// Usar el operador regex sin escribirlo con //
+db.employee.find( { description:/travel/} );
+db.employee.find( { title:/Support/i} );
+db.employee.find( { title:/^And/} );
+db.employee.find( { title:/y$/} );
+
 ```
 
 #### Consultas anidadas con operadores de comparación
