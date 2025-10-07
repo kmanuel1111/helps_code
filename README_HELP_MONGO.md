@@ -19,7 +19,6 @@ Esta guía proporciona una referencia rápida y clara de los comandos más utili
       - [Operadores Logicos](#operadores-logicos)
       - [Operadores de Elemento](#operadores-de-elemento)
       - [Operadores de Evaluacion](#operadores-de-evaluacion)
-      - [Consultas anidadas con operadores de comparación](#consultas-anidadas-con-operadores-de-comparación)
     - [✏️ Actualizaciones](#️-actualizaciones)
     - [🗑️ Eliminación](#️-eliminación)
     - [🛠️ Administración](#️-administración)
@@ -257,7 +256,26 @@ db.employee.find( { description:/travel/} );
 db.employee.find( { title:/Support/i} );
 db.employee.find( { title:/^And/} );
 db.employee.find( { title:/y$/} );
+```
+- **$expr** _Comparar expresiones_
+```js
+// Comparar si es mayor que con ayuda del operador de comparacion
+db.employee.find({$expr:{$gt:["$delay","$tolerance" ]} });
+// Comparar si es menor que con ayuda del operador de comparacion
+db.employee.find({$expr:{$lt:["$delay","$tolerance" ]} });
+// Comprar si igual con ayuda del operador de comparacion
+db.employee.find({$expr:{$eq:["$delay","$tolerance" ]} });
+```
 
+- **$mod** _Divisor_
+````js
+// NO ACEPTA DECIMALES
+// Muestra los documentos que cuando la edad sea divisible entre 2 (par)
+db.employee.find({age:{$mod:[2,0]} });
+// Muestra los documentos que cuando la edad NO sea divisible entre 2 (impar)
+db.employee.find({age:{$mod:[2,1]} });
+// Muestra los documentos que cuando la edad sea divisible entre 3 
+db.employee.find({age:{$mod:[3,0]} });
 ```
 
 #### Consultas anidadas con operadores de comparación
