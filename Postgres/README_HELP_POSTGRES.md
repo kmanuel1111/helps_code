@@ -13,6 +13,7 @@ La idea es que sea **transferible, autoexplicativa y modular**, con ejemplos cla
   - [2. Backup de Tabla](#2-backup-de-tabla-específica)
   - [3. Backup Completo (`pg_dumpall`)](#3-backup-completo-del-servidor-con-pg_dumpall)
   - [4. Restauración (`pg_restore`)](#4-restauración-con-pg_restore)
+- [🐚 Comandos Básicos (PSQL)](#-comandos-básicos-psql)
 
 ---
 
@@ -236,3 +237,119 @@ pg_restore \
   "/backups/produccion.backup"
 ```
 👉 Aquí -d postgres indica que la conexión inicial se hace a la base principal, y desde allí se ejecuta la creación de la nueva base
+
+---
+
+## 🐚 Comandos Básicos (PSQL)
+
+Esta sección es una **guía de supervivencia** para quienes están empezando a usar la terminal de PostgreSQL (`psql`). Aquí encontrarás los comandos que usarás el 90% del tiempo.
+
+### ℹ️ Ayuda y Versión
+
+Antes de intentar cualquier operación, es útil verificar la versión y las opciones disponibles:
+
+```bash
+# Ver la versión del cliente psql
+psql --version
+
+# Ver ayuda completa de argumentos de línea de comandos
+psql --help
+```
+### 🔌 Conexión Detallada
+
+Para conectarte a una base de datos específica con todos los parámetros controlados, usa la siguiente estructura:
+
+```bash
+# Parámetros explicados:
+# --host | -h: Host del servidor (IP o dominio)
+# --port | -p: Puerto de conexión (5432 es el default)
+# --username | -U: Usuario de conexión
+# --dbname | -d: Nombre de la base de datos a conectar
+# --password | -W:  Solicita la contraseña explícitamente (opcional)
+
+psql \
+  --host=localhost \
+  --port=5432 \
+  --username=kzambrano \
+  --dbname=cc_development
+```
+
+### 📜 Ejecución de Scripts (.sql)
+
+Para ejecutar un archivo de comandos SQL desde la terminal (sin entrar a la consola interactiva), usa el flag `-f`:
+
+```bash
+# Ejecutar un archivo SQL en una base de datos específica
+psql \
+  --host=localhost \
+  --username=kzambrano \
+  --dbname=cc_development \
+  -f archivo_script.sql
+```
+
+### 🧭 Navegación y Control
+
+| Comando        | Descripción                                    | Ejemplo / Notas                                   |
+| :------------- | :--------------------------------------------- | :------------------------------------------------ |
+| `\l`           | **Listar** todas las bases de datos.           | Muestra nombres, dueños y codificación.           |
+| `\c nombre_db` | **Conectarse** a una base de datos específica. | `\c mi_tienda` (Cambia el prompt a `mi_tienda=>`) |
+| `\dt`          | **Listar tablas** de la base de datos actual.  | Solo muestra tablas públicas.                     |
+| `\du`          | **Listar usuarios** (roles) y sus permisos.    | Útil para ver quién es superusuario.              |
+| `\dn`          | **Listar esquemas** del sistema.               |                                                   |
+| `\q`           | **Salir** de la consola psql.                  | Vuelve a la terminal de Linux.                    |
+
+### 🧐 Inspección de Objetos
+
+- **`\d nombre_tabla`**: Muestra la estructura básica de una tabla (columnas, tipos de dato).
+- **`\d+ nombre_tabla`**: Muestra información detallada (comentarios, tamaño en disco, índices).
+
+### 📝 Consultas SQL "De Bolsillo"
+
+Una vez dentro de una base de datos, usas SQL estándar. **Nota importante:** Todas las sentencias SQL deben terminar con punto y coma (`;`).
+
+#### Consultas de Datos
+```sql
+-- Ver todo el contenido de una tabla
+SELECT * FROM usuarios;
+
+-- Ver solo columnas específicas
+SELECT nombre, email FROM usuarios;
+
+-- Filtrar datos (Clause WHERE)
+SELECT * FROM usuarios WHERE activo = true;
+
+-- Ordenar resultados
+SELECT * FROM productos ORDER BY precio DESC;
+```
+
+#### Gestión de Datos (DML)
+```sql
+-- Insertar un nuevo registro
+INSERT INTO usuarios (nombre, email) VALUES ('Juan Perez', 'juan@example.com');
+
+-- Actualizar un registro existente
+UPDATE usuarios SET activo = false WHERE id = 5;
+
+-- Eliminar un registro (¡Cuidado! Siempre usa WHERE)
+DELETE FROM usuarios WHERE id = 10;
+```
+
+#### Gestión de Estructura (DDL)
+```sql
+-- Crear una base de datos nueva
+CREATE DATABASE mi_nueva_db;
+
+-- Crear una tabla simple
+CREATE TABLE productos (
+    id SERIAL PRIMARY KEY,
+    nombre VARCHAR(100),
+    precio DECIMAL(10,2)
+);
+```
+
+### 🆘 Ayuda y Tips
+
+- **`\?`**: Muestra la lista completa de comandos `\` (barra invertida) de psql.
+- **`\h`**: Muestra ayuda sobre comandos SQL. Ejemplo: `\h SELECT` te explica cómo usar `SELECT`.
+- **Limpiar pantalla**: En Linux, puedes usar `Ctrl + L` para limpiar la terminal de psql.
+- **Historial**: Usa las flechas `Arriba` y `Abajo` para navegar por comandos anteriores.
