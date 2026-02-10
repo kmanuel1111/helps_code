@@ -14,6 +14,7 @@ La idea es que sea **transferible, autoexplicativa y modular**, con ejemplos cla
   - [3. Backup Completo (`pg_dumpall`)](#3-backup-completo-del-servidor-con-pg_dumpall)
   - [4. Restauración (`pg_restore`)](#4-restauración-con-pg_restore)
 - [🐚 Comandos Básicos (PSQL)](#-comandos-básicos-psql)
+- [⚙️ Gestión del Servicio (pg_ctl)](#-gestión-del-servicio-pg_ctl)
 
 ---
 
@@ -353,3 +354,44 @@ CREATE TABLE productos (
 - **`\h`**: Muestra ayuda sobre comandos SQL. Ejemplo: `\h SELECT` te explica cómo usar `SELECT`.
 - **Limpiar pantalla**: En Linux, puedes usar `Ctrl + L` para limpiar la terminal de psql.
 - **Historial**: Usa las flechas `Arriba` y `Abajo` para navegar por comandos anteriores.
+
+---
+
+## ⚙️ Gestión del Servicio (pg_ctl)
+
+`pg_ctl` es una utilidad para inicializar, iniciar, detener o controlar el servidor de PostgreSQL. A diferencia de `systemctl` (que gestiona el servicio a nivel de sistema operativo), `pg_ctl` permite un control más directo sobre un directorio de datos específico.
+
+### Estructura Básica
+
+```bash
+pg_ctl -D /ruta/al/directorio_data [accion]
+```
+
+### Acciones Comunes
+
+| Acción      | Descripción                                                                                   | Comando Ejemplo                              |
+| :---------- | :-------------------------------------------------------------------------------------------- | :------------------------------------------- |
+| **start**   | Inicia el servidor.                                                                           | `pg_ctl -D /var/lib/postgresql/data start`   |
+| **stop**    | Detiene el servidor.                                                                          | `pg_ctl -D /var/lib/postgresql/data stop`    |
+| **restart** | Reinicia el servidor.                                                                         | `pg_ctl -D /var/lib/postgresql/data restart` |
+| **status**  | Verifica si el servidor está corriendo.                                                       | `pg_ctl -D /var/lib/postgresql/data status`  |
+| **reload**  | Recarga archivos de configuración (`pg_hba.conf`, `postgresql.conf`) sin detener el servicio. | `pg_ctl -D /var/lib/postgresql/data reload`  |
+
+### Modos de Apagado (`-m`)
+
+Al detener el servidor (`stop` o `restart`), puedes especificar cómo tratar las conexiones activas con el flag `-m`:
+
+- **Smart** (`-m s`): Espera a que todos los clientes se desconecten y terminen sus transacciones. (Por defecto en backups).
+- **Fast** (`-m f`): Interrumpe transacciones y desconecta clientes inmediatamente. (Recomendado para reinicios rápidos).
+- **Immediate** (`-m i`): Aborta el proceso sin cerrar limpiamente. **No recomendado** (puede requerir recuperación al iniciar).
+
+### Redirección de Logs (`-l`)
+
+Es muy recomendable guardar la salida del servidor en un archivo de log. Usa el flag `-l`:
+
+### Ejemplo Práctico
+
+Reiniciar el servidor de forma rápida (fast) especificando el directorio de datos y archivo de log (Local):
+```bash
+pg_ctl -D /var/lib/postgres/data -l /var/log/postgresql/server.log -m fast restart
+```
