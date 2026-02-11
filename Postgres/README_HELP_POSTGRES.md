@@ -15,6 +15,7 @@ La idea es que sea **transferible, autoexplicativa y modular**, con ejemplos cla
   - [4. Restauración (`pg_restore`)](#4-restauración-con-pg_restore)
 - [🐚 Comandos Básicos (PSQL)](#-comandos-básicos-psql)
 - [⚙️ Gestión del Servicio (pg_ctl)](#-gestión-del-servicio-pg_ctl)
+- [🏛️ Jerarquía de Objetos](#-jerarquía-de-objetos-en-postgresql)
 
 ---
 
@@ -395,3 +396,42 @@ Reiniciar el servidor de forma rápida (fast) especificando el directorio de dat
 ```bash
 pg_ctl -D /var/lib/postgres/data -l /var/log/postgresql/server.log -m fast restart
 ```
+
+---
+
+## 🏛️ Jerarquía de Objetos en PostgreSQL
+
+Para entender cómo PostgreSQL organiza los datos, es fundamental comprender su jerarquía de objetos. A diferencia de otros gestores de base de datos, PostgreSQL estructura los objetos en varios niveles lógicos y físicos.
+
+![jerarquia_postgres](./jerarquia_postgres.png)
+
+### Explicación de la Jerarquía
+
+Esta estructura jerárquica permite un control granular y organizado de los datos:
+
+1.  **Database Cluster (Clúster de Bases de Datos)**
+    *   Es la instancia principal de PostgreSQL en ejecución (el servicio).
+    *   No se refiere a múltiples servidores, sino a **una colección de bases de datos** gestionada por una única instancia.
+    *   Administra recursos compartidos como la memoria y procesos de fondo.
+
+2.  **Objetos Globales (Users/Groups, Tablespaces)**
+    *   **Roles (Users/Groups):** Los usuarios se definen a nivel de clúster. Un mismo usuario puede tener acceso a múltiples bases de datos dentro del clúster si se le conceden los permisos.
+    *   **Tablespaces:** Definen las ubicaciones físicas en el disco donde se almacenan los archivos. Son globales y pueden ser utilizados por cualquier base de datos para optimizar el almacenamiento (ej. guardar índices en un disco SSD rápido).
+
+3.  **Database (Base de Datos)**
+    *   Es un contenedor **aislado** de esquemas y datos.
+    *   Los objetos de una base de datos no son visibles ni accesibles directamente desde otra base de datos.
+    *   Cada base de datos tiene sus propios catálogos y configuraciones.
+
+4.  **Objetos a Nivel de Base de Datos**
+    *   **Catalogs:** Tablas del sistema que almacenan metadatos sobre la base de datos (tablas, columnas, tipos de datos).
+    *   **Extensions:** Módulos que extienden la funcionalidad de PostgreSQL (como PostGIS para datos geográficos o pgcrypto).
+    *   **Schema (Esquema):** Es un espacio de nombres lógico (*namespace*) dentro de la base de datos. Permite organizar objetos y evitar colisiones de nombres (ej. `ventas.usuarios` y `rrhh.usuarios`).
+
+5.  **Objetos a Nivel de Esquema**
+    *   Aquí residen los objetos que contienen o procesan los datos reales:
+        *   **Table:** Almacena registros (filas).
+        *   **View:** Consultas guardadas que actúan como tablas virtuales.
+        *   **Sequence:** Generadores de números secuenciales (usados para IDs).
+        *   **Functions:** Procedimientos almacenados y lógica de negocio.
+        *   **Event Triggers:** Disparadores que reaccionan a eventos del sistema.
