@@ -19,6 +19,7 @@ La idea es que sea **transferible, autoexplicativa y modular**, con ejemplos cla
 - [🗄️ Tablespaces](#-tablespaces-en-postgresql)
 - [🛢️ Bases de Datos (Databases)](#-bases-de-datos-databases)
 - [🛡️ Gestión de Permisos (GRANT)](#-gestión-de-permisos-grant)
+- [🛑 Revocar Permisos (REVOKE)](#-revocar-permisos-revoke)
 
 ---
 
@@ -711,5 +712,65 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_user;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO app_user;
 ```
+
+---
+
+## 🛑 Revocar Permisos (REVOKE)
+
+El comando `REVOKE` es lo opuesto a `GRANT`. Se utiliza para quitar privilegios previamente otorgados a un usuario o rol.
+
+**Sintaxis General:**
+`REVOKE [PERMISO] ON [OBJETO] FROM [USUARIO];`
+
+### 1. Nivel Base de Datos
+
+Quitar el permiso de conexión.
+
+```sql
+-- Revocar conexión a la base de datos
+REVOKE CONNECT ON DATABASE mi_tienda FROM kzambrano;
+
+-- Revocar conexión al rol público (Buena Práctica de Seguridad)
+REVOKE CONNECT ON DATABASE mi_tienda FROM public;
+```
+
+### 2. Nivel Esquema
+
+Quitar permisos de uso o creación.
+
+```sql
+-- Revocar uso del esquema
+REVOKE USAGE ON SCHEMA public FROM kzambrano;
+
+-- Revocar permiso de creación
+REVOKE CREATE ON SCHEMA public FROM kzambrano;
+```
+
+### 3. Nivel Tablas y Objetos
+
+Quitar permisos sobre datos.
+
+```sql
+-- Revocar permisos de lectura
+REVOKE SELECT ON ALL TABLES IN SCHEMA public FROM kzambrano;
+
+-- Revocar permisos de escritura
+REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public FROM kzambrano;
+
+-- Revocar TODOS los privilegios sobre una tabla específica
+REVOKE ALL PRIVILEGES ON TABLE usuarios FROM kzambrano;
+```
+
+### ⚠️ Uso de CASCADE y RESTRICT
+
+Por defecto, `REVOKE` usa `RESTRICT`, lo que significa que fallará si otros privilegios dependen del que estás intentando revocar.
+
+Si deseas revocar un privilegio y todos los que dependen de él (por ejemplo, si el usuario otorgó ese permiso a otros), usa `CASCADE`.
+
+```sql
+-- Revocar permiso y sus dependientes
+REVOKE SELECT ON TABLE sensitiva FROM usuario_admin CASCADE;
+```
+
 
 
