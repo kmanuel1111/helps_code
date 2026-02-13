@@ -16,6 +16,9 @@ La idea es que sea **transferible, autoexplicativa y modular**, con ejemplos cla
 - [🐚 Comandos Básicos (PSQL)](#-comandos-básicos-psql)
 - [⚙️ Gestión del Servicio (pg_ctl)](#-gestión-del-servicio-pg_ctl)
 - [🏛️ Jerarquía de Objetos](#-jerarquía-de-objetos-en-postgresql)
+- [🗄️ Tablespaces](#-tablespaces-en-postgresql)
+- [🛢️ Bases de Datos (Databases)](#-bases-de-datos-databases)
+- [🛡️ Gestión de Permisos (GRANT)](#-gestión-de-permisos-grant)
 
 ---
 
@@ -435,3 +438,278 @@ Esta estructura jerárquica permite un control granular y organizado de los dato
         *   **Sequence:** Generadores de números secuenciales (usados para IDs).
         *   **Functions:** Procedimientos almacenados y lógica de negocio.
         *   **Event Triggers:** Disparadores que reaccionan a eventos del sistema.
+
+---
+
+## 🗄️ Tablespaces en PostgreSQL
+
+Un `TABLESPACE` es una ubicación en el sistema de archivos donde PostgreSQL almacena los archivos de datos que contienen las tablas e índices de la base de datos.
+
+### ¿Para qué sirven?
+
+1.  **Optimización de Rendimiento (I/O):** Puedes colocar tablas o índices con mucho acceso en discos SSD rápidos y datos históricos o de poco uso en discos HDD más lentos pero económicos.
+2.  **Gestión de Espacio:** Si una partición de disco se llena, puedes crear un tablespace en otra partición y mover objetos allí sin detener el servicio.
+3.  **Separación de Carga:** Separar índices de tablas en distintos discos físicos para reducir la contención de I/O.
+
+### 🛠️ Pasos para crear y usar un Tablespace
+
+#### 1. Crear el directorio físico (en el SO)
+
+Primero, debes crear la carpeta en el sistema operativo y darle permisos al usuario `postgres`.
+
+```bash
+# Crear directorio
+sudo mkdir -p /mnt/fast_ssd/pg_data
+
+# Asignar propietario postgres
+sudo chown -R postgres:postgres /mnt/fast_ssd/pg_data
+```
+
+#### 2. Crear el Tablespace (en PostgreSQL)
+
+Conéctate a PostgreSQL y ejecuta:
+
+```sql
+CREATE TABLESPACE fast_tablespace OWNER kzambrano LOCATION '/mnt/fast_ssd/pg_data';
+```
+
+#### 3. Usar el Tablespace
+
+**Opción A: Crear una tabla directamente en el tablespace**
+
+```sql
+CREATE TABLE pedidos_log (
+    id SERIAL PRIMARY KEY,
+    fecha TIMESTAMP DEFAULT NOW(),
+    descripcion TEXT
+) TABLESPACE fast_tablespace;
+```
+
+**Opción B: Mover una tabla existente al tablespace**
+
+```sql
+ALTER TABLE usuarios SET TABLESPACE fast_tablespace;
+```
+
+**Opción C: Mover un índice a otro tablespace**
+
+```sql
+ALTER INDEX idx_usuarios_email SET TABLESPACE fast_tablespace;
+```
+
+**Opción D: Asignar un tablespace por defecto a una base de datos**
+
+```sql
+CREATE DATABASE nueva_db TABLESPACE fast_tablespace;
+```
+
+Esto hará que todas las tablas creadas en `nueva_db` se guarden por defecto en `fast_tablespace`, a menos que se especifique lo contrario.
+
+### 🔍 Consultar Tablespaces
+
+Para ver los tablespaces existentes y su ubicación:
+```
+\db+
+```
+```sql
+SELECT spcname, pg_tablespace_location(oid) FROM pg_tablespace;
+```
+
+### 🗑️ Eliminar un Tablespace
+
+Para eliminar un tablespace, primero debes asegurarte de que no esté en uso. Es decir, no debe contener tablas, índices u otros objetos. Si contiene objetos, debes moverlos a otro tablespace antes de eliminarlo.
+
+```sql
+-- Eliminar un tablespace que no está en uso
+DROP TABLESPACE fast_tablespace;
+```
+
+---
+
+## 🛢️ Bases de Datos (Databases)
+
+Una **Base de Datos** en PostgreSQL es un contenedor lógico que aísla esquemas, tablas, funciones y otros objetos.
+
+### Características Principales
+
+1.  **Aislamiento:** Un usuario conectado a una base de datos no puede ver ni consultar objetos de otra base de datos.
+2.  **Configuración Propia:** Cada base de datos puede tener su propia configuración y dueño.
+3.  **Backups Individuales:** Puedes restaurar o hacer backup de una base de datos sin afectar a las demás.
+
+### 🛠️ Gestión de Bases de Datos
+
+#### 1. Crear una Base de Datos
+
+El comando básico es `CREATE DATABASE`.
+
+```sql
+-- Creación simple
+CREATE DATABASE mi_tienda;
+
+-- Creación con parámetros específicos
+CREATE DATABASE mi_tienda
+    WITH 
+    OWNER = kzambrano
+    ENCODING = 'UTF8'
+    TABLESPACE = fast_tablespace
+    CONNECTION LIMIT = -1;
+```
+
+Nota: Se recomienda revocar la conexión a public. De forma que solo puedan ingresar los usuarios con pirivilegios.
+
+```sql
+REVOKE CONNECT ON DATABASE mi_tienda FROM public;
+```
+
+#### 2. Modificar una Base de Datos
+
+Puedes renombrar, cambiar el dueño o ajustar parámetros de configuración.
+
+```sql
+-- Renombrar la base de datos
+ALTER DATABASE mi_tienda RENAME TO mi_tienda_v2;
+
+-- Cambiar el propietario
+ALTER DATABASE mi_tienda_v2 OWNER TO nuevo_usuario;
+
+-- Configurar parámetros por defecto para esta base de datos
+-- (Ejemplo: establecer la zona horaria por defecto)
+ALTER DATABASE mi_tienda_v2 SET timezone TO 'America/Caracas';
+```
+
+#### 3. Eliminar una Base de Datos
+
+**¡Cuidado!** Esta acción es irreversible.
+
+```sql
+DROP DATABASE mi_tienda_v2;
+```
+
+> **Nota:** No puedes borrar una base de datos si hay usuarios conectados a ella.
+
+**Forzar desconexión y borrado (PostgreSQL 13+):**
+
+```sql
+DROP DATABASE mi_tienda_v2 WITH (FORCE); -- BETA
+```
+
+#### 4. Clonar una Base de Datos
+
+Puedes crear una copia exacta de una base de datos existente usándola como `TEMPLATE`.
+
+```sql
+-- Crear 'tienda_test' como copia de 'tienda_prod'
+-- Importante: Nadie puede estar conectado a 'tienda_prod' durante este proceso
+CREATE DATABASE tienda_test TEMPLATE tienda_prod;
+```
+
+### 📏 Consultar Tamaño
+
+Para ver cuánto espacio en disco ocupa una base de datos:
+
+```sql
+SELECT pg_size_pretty(pg_database_size('nombre_db'));
+```
+
+Ver el tamaño de todas las bases de datos:
+
+```sql
+SELECT datname, pg_size_pretty(pg_database_size(datname)) 
+FROM pg_database 
+ORDER BY pg_database_size(datname) DESC;
+```
+
+---
+
+## 🛡️ Gestión de Permisos (GRANT)
+
+En PostgreSQL, los permisos se gestionan en una jerarquía: **Instancia -> Base de Datos -> Esquema -> Objeto (Tabla, Vista, etc.)**.
+
+Para que un usuario pueda hacer un `SELECT` en una tabla, debe tener permisos de `CONNECT` en la base de datos y `USAGE` en el esquema donde está la tabla.
+
+### 1. Nivel Base de Datos
+
+Permite al usuario conectarse a la base de datos.
+Recuerda que, por defecto, `public` suele tener permiso de conexión, por lo que es buena práctica revocarlo si se busca seguridad estricta.
+
+```sql
+-- Permitir conexión
+GRANT CONNECT ON DATABASE mi_tienda TO kzambrano;
+```
+
+### 2. Nivel Esquema
+
+El permiso `USAGE` permite "entrar" al esquema y buscar objetos dentro de él. `CREATE` permite crear nuevos objetos (tablas, funciones, etc.).
+
+```sql
+-- Permitir uso del esquema public
+GRANT USAGE ON SCHEMA public TO kzambrano;
+
+-- Permitir crear tablas en el esquema public
+GRANT CREATE ON SCHEMA public TO kzambrano;
+```
+
+### 3. Nivel Tablas y Objetos
+
+Aquí se definen las acciones específicas sobre los datos.
+
+```sql
+-- Permiso de lectura
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO kzambrano;
+
+-- Permisos de escritura (Insertar, Actualizar, Borrar)
+GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kzambrano;
+
+-- Otorgar TODOS los permisos sobre una tabla específica
+GRANT ALL PRIVILEGES ON TABLE usuarios TO kzambrano;
+```
+
+> **Nota:** `ON ALL TABLES` solo afecta las tablas que existen **en ese momento**. Para tablas futuras, debes usar `ALTER DEFAULT PRIVILEGES`.
+
+### 4. Nivel Secuencias
+
+Si tienes columnas `SERIAL` o `BIGSERIAL`, el usuario necesita permisos para usar la secuencia asociada al insertar datos.
+
+```sql
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO kzambrano;
+```
+
+### 🧪 Ejemplos de Roles Comunes
+
+#### Escenario A: Usuario de Solo Lectura (Reportes)
+
+```sql
+-- 1. Conexión
+GRANT CONNECT ON DATABASE mi_tienda TO usuario_reportes;
+
+-- 2. Uso del esquema
+GRANT USAGE ON SCHEMA public TO usuario_reportes;
+
+-- 3. Lectura de datos
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO usuario_reportes;
+
+-- 4. Asegurar lectura para tablas futuras
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO usuario_reportes;
+```
+
+#### Escenario B: Usuario de Aplicación (Lectura y Escritura)
+
+```sql
+-- 1. Conexión
+GRANT CONNECT ON DATABASE mi_tienda TO app_user;
+
+-- 2. Uso del esquema
+GRANT USAGE ON SCHEMA public TO app_user;
+
+-- 3. Lectura y Escritura de datos
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user;
+
+-- 4. Permisos sobre secuencias (para los IDs)
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_user;
+
+-- 5. Asegurar permisos para tablas futuras
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO app_user;
+```
+
+
