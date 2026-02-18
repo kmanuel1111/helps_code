@@ -20,6 +20,9 @@ La idea es que sea **transferible, autoexplicativa y modular**, con ejemplos cla
 - [🛢️ Bases de Datos (Databases)](#-bases-de-datos-databases)
 - [🛡️ Gestión de Permisos (GRANT)](#-gestión-de-permisos-grant)
 - [🛑 Revocar Permisos (REVOKE)](#-revocar-permisos-revoke)
+- [🔍 Search Path (Ruta de Búsqueda)](#-que-es-el-search_path)
+- [👮‍♂️ Seguridad: Autenticación (pg_hba.conf)](#-seguridad-autenticación-pg_hba-conf)
+- [🛡️ Seguridad: Políticas de Fila (RLS)](#-seguridad-row-level-security-rls-policies)
 
 ---
 
@@ -774,3 +777,211 @@ REVOKE SELECT ON TABLE sensitiva FROM usuario_admin CASCADE;
 
 
 
+
+---
+
+## 🔍 ¿Qué es el `search_path`?
+
+Imagina que estás en una biblioteca gigante (tu base de datos) y le pides al bibliotecario (PostgreSQL) el libro "Harry Potter".  
+Si no le dices explícitamente en qué sección buscar (Fantasía, Infantil, Best Sellers), el bibliotecario tiene que tener un orden predefinido para buscar.  
+Ese orden o "lista de lugares donde mirar" es el **`search_path`**.
+
+En términos técnicos, el `search_path` es una lista ordenada de **esquemas** que PostgreSQL recorre cuando haces referencia a un objeto (tabla, vista, función) sin especificar su esquema completo.
+
+### Ejemplo visual
+
+Supongamos que tienes:
+1.  Esquema **`ventas`** con una tabla llamada **`clientes`**.
+2.  Esquema **`public`** TAMBIÉN con una tabla llamada **`clientes`**.
+
+Y tu `search_path` está configurado como: `ventas, public`.
+
+Cuando ejecutas:
+```sql
+SELECT * FROM clientes;
+```
+
+PostgreSQL hace lo siguiente:
+1.  ¿Existe `clientes` en el esquema `ventas`? **¡SÍ!** -> Usa esa tabla y **se detiene**.
+2.  Ignora totalmente la tabla `clientes` que está en `public`.
+
+### 🕵️‍♀️ ¿Cómo ver tu `search_path` actual?
+
+Por defecto, PostgreSQL viene configurado así: `"$user", public`.
+
+*   `"$user"`: Busca primero en un esquema que se llame **igual que tu usuario actual**. Si tu usuario es `kzambrano`, busca un esquema `kzambrano`.
+*   `public`: Si no lo encuentra antes, busca en el esquema `public` (donde suele estar todo por defecto).
+
+Para verlo en tu consola, ejecuta:
+
+```sql
+SHOW search_path;
+```
+
+### 🛠️ ¿Cómo cambiar el `search_path`?
+
+Tienes 3 niveles para cambiarlo, del más temporal al más permanente:
+
+#### 1. Solo para esta sesión (Temporal)
+Si cierras la terminal o te desconectas, se pierde la configuración. Útil para pruebas rápidas.
+
+```sql
+-- Ahora buscará primero en 'ventas', luego en 'public'
+SET search_path TO ventas, public;
+```
+
+#### 2. Para un usuario específico (Persistente)
+Cada vez que ese usuario se conecte, tendrá ese camino de búsqueda predefinido. Ideal para usuarios de aplicaciones.
+
+```sql
+ALTER ROLE kzambrano SET search_path TO ventas, public;
+```
+
+#### 3. Para toda la base de datos (Global)
+Afecta a **todos** los que se conecten a esa base de datos (a menos que tengan su propia configuración de usuario, que tiene prioridad).
+
+```sql
+ALTER DATABASE mi_tienda SET search_path TO ventas, public;
+```
+
+### 💡 ¿Por qué es esto tan útil?
+
+1.  **Limpieza y Organización:** Puedes tener tus tablas en esquemas organizados (`facturacion`, `rrhh`, `logistica`) y solo añadir al `search_path` lo que necesites en ese momento. Te ahorras escribir `SELECT * FROM facturacion.facturas` y solo escribes `SELECT * FROM facturas`.
+    
+2.  **Seguridad:** Puedes "ocultar" tablas de sistemas o versiones antiguas simplemente sacándolas del path.
+    
+3.  **Multitenancy (SaaS):** Este es el "superpoder" del search path.
+    *   Imagina que tienes una aplicación para varios clientes.
+    *   Creas un esquema `cliente_A` y otro `cliente_B` con las **mismas tablas** (facturas, usuarios).
+    *   Cuando se conecta el Cliente A, configuras: `SET search_path TO cliente_A`.
+    *   La aplicación ejecuta `SELECT * FROM facturas` y automáticamente trae las de A.
+    *   ¡El código de la aplicación es el mismo para todos! Solo cambia el `search_path`.
+
+---
+
+## 👮‍♂️ Seguridad: Autenticación (pg_hba.conf)
+
+El **`pg_hba.conf`** es el "portero de la discoteca" de tu base de datos. Controla **QUIÉN** puede conectarse, **DESDE DÓNDE** y **CÓMO**.
+HBA significa **Host-Based Authentication**.
+
+### ¿Dónde encontrarlo?
+Su ubicación depende de la instalación, pero puedes preguntárselo a Postgres:
+
+```sql
+SHOW hba_file;
+```
+
+### Estructura del Archivo
+
+Cada línea es una regla. Postgres lee el archivo de arriba a abajo y **se detiene en la primera coincidencia**.
+
+```
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+local   all             all                                     peer
+host    all             all             127.0.0.1/32            scram-sha-256
+host    mi_app_db       app_user        192.168.1.0/24          md5
+host    all             all             0.0.0.0/0               reject
+```
+
+#### Explicación de Columnas:
+
+1.  **TYPE:**
+    *   `local`: Conexiones a través de socket Unix (en la misma máquina).
+    *   `host`: Conexiones TCP/IP (incluyendo localHost y remotas).
+    *   `hostssl`: Solo conexiones TCP/IP encriptadas con SSL.
+
+2.  **DATABASE:**
+    *   `all`: Todas las bases de datos.
+    *   `nombre_db`: Una base de datos específica.
+    *   `replication`: Para conexiones de replicación.
+
+3.  **USER:**
+    *   `all`: Cualquier usuario.
+    *   `nombre_usuario`: Un usuario específico.
+    *   `+nombre_grupo`: Miembros de un grupo.
+
+4.  **ADDRESS:**
+    *   La IP o rango de IPs desde donde se permite la conexión (CIDR).
+    *   `127.0.0.1/32`: Solo localhost IPv4.
+    *   `::1/128`: Solo localhost IPv6.
+    *   `0.0.0.0/0`: Desde CUALQUIER lugar (⚠️ Peligroso si es `trust`).
+
+5.  **METHOD:**
+    *   `trust`: **¡PELIGRO!** Permite entrar sin contraseña. Solo úsalo en entornos de desarrollo muy controlados.
+    *   `peer`: Usa el nombre del usuario del sistema operativo (común en Linux para usuario `postgres`).
+    *   `md5`: Contraseña con hash MD5 (antiguo estándar).
+    *   `scram-sha-256`: Contraseña con hash SHA-256 (estándar moderno y seguro).
+    *   `reject`: Rechaza la conexión explícitamente.
+
+### 🔄 Aplicar Cambios
+
+Después de editar el archivo, **NO necesitas reiniciar** la base de datos, solo recargar la configuración:
+
+Desde SQL:
+```sql
+SELECT pg_reload_conf();
+```
+
+Desde Terminal:
+```bash
+pg_ctl reload
+# O en sistemas systemd:
+sudo systemctl reload postgresql
+```
+
+---
+
+## 🛡️ Seguridad: Row Level Security (RLS) Policies
+
+Los permisos normales (`GRANT SELECT`) te dejan ver **toda** la tabla o nada.
+Las **Policies (RLS)** te permiten definir reglas para ver **solo ciertas filas**.
+
+Imagina una tabla `nominas`.
+*   El jefe puede ver TODAS las filas.
+*   El empleado solo puede ver SU PROPIA fila.
+
+### 1. Activar RLS en la Tabla
+
+Por defecto, RLS está desactivado. Debes activarlo explícitamente:
+
+```sql
+ALTER TABLE nominas ENABLE ROW LEVEL SECURITY;
+```
+
+🔴 **Importante:** Una vez activado, por defecto **NADIE (excepto el dueño de la tabla y superusuarios)** puede ver nada hasta que crees una política. (Principio de "Deny by Default").
+
+### 2. Crear una Política (POLICY)
+
+#### Ejemplo A: El usuario solo ve sus propios datos
+
+Asumimos que la tabla `nominas` tiene una columna `usuario` que coincide con el `current_user` de la base de datos.
+
+```sql
+CREATE POLICY ver_propia_nomina ON nominas
+    FOR SELECT                           -- Solo aplica a consultas SELECT
+    TO public                            -- Aplica a todos los roles
+    USING (usuario = current_user);      -- Condición: columna 'usuario' == usuario conectado
+```
+
+#### Ejemplo B: El Administrador ve todo
+
+```sql
+CREATE POLICY admin_ve_todo ON nominas
+    FOR ALL                              -- Aplica a SELECT, INSERT, UPDATE, DELETE
+    TO rol_administrador                 -- Solo aplica a este rol
+    USING (true);                        -- Siempre verdadero (ve todo)
+```
+
+### 3. Casos de Uso Comunes
+
+*   **Multi-tenant por fila:** Varios clientes en la misma tabla, cada uno solo ve sus datos (`organization_id = current_setting('app.current_org')::int`).
+*   **Soft Deletes:** Ocultar filas marcadas como borradas (`deleted_at IS NULL`) para todos los usuarios normales.
+
+### 🔍 Verificar Políticas
+
+Para ver qué políticas existen en una tabla:
+
+```sql
+\d nominas
+```
+Al final de la salida verás la sección "Policies".
