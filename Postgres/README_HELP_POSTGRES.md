@@ -24,6 +24,21 @@ La idea es que sea **transferible, autoexplicativa y modular**, con ejemplos cla
 - [👮‍♂️ Seguridad: Autenticación (pg_hba.conf)](#-seguridad-autenticación-pg_hba-conf)
 - [🛡️ Seguridad: Políticas de Fila (RLS)](#-seguridad-row-level-security-rls-policies)
 - [🖥️ pgAdmin 4: Interfaz Gráfica](#-pgadmin-4-interfaz-gráfica-para-postgresql)
+- [📚 Introducción a SQL](#-introducción-a-sql)
+  - [🔢 Tipos de Datos](#-tipos-de-datos-en-postgresql)
+  - [🏗️ Estructura del Lenguaje SQL (DDL, DML, DCL, TCL)](#-estructura-del-lenguaje-sql)
+  - [📋 Tablas](#-tablas-tables)
+  - [🔒 Tipos de Constraints](#-tipos-de-constraints-restricciones)
+  - [👁️ Vistas (Views)](#-vistas-views)
+  - [🔢 Secuencias (Sequences)](#-secuencias-sequences)
+  - [🏷️ Domains](#-domains-dominios)
+  - [🔗 Tipos de JOINs](#-tipos-de-joins)
+- [🧰 Temas Avanzados de SQL](#-temas-avanzados-de-sql)
+  - [⚡ Funciones SQL Útiles](#-funciones-sql-útiles)
+  - [🖨️ FORMAT() — Formateo de Texto](#-format--formateo-de-texto-en-sql)
+  - [🔬 Plan de Ejecución (EXPLAIN)](#-plan-de-ejecución-explain--explain-analyze)
+  - [🔤 Quoting en PostgreSQL](#-quoting-en-postgresql)
+  - [📇 Índices (Indexes)](#-índices-indexes)
 
 ---
 
@@ -1220,3 +1235,1489 @@ ORDER BY duracion DESC;
 | Crear un usuario        | Clic derecho en Login/Group Roles → Create   |
 | Hacer un backup         | Clic derecho en la base de datos → Backup... |
 | Ver roles y permisos    | Object → Properties → Security               |
+
+---
+
+# 📚 Introducción a SQL
+
+SQL (**Structured Query Language**) es el idioma universal para comunicarse con bases de datos relacionales.  
+No importa si usas PostgreSQL, MySQL, SQL Server u Oracle — el núcleo del lenguaje es el mismo.
+
+> **¿Qué significa "relacional"?**  
+> Que los datos se guardan en **tablas** (como hojas de cálculo), y esas tablas pueden estar **relacionadas** entre sí. Por ejemplo, una tabla de `pedidos` puede relacionarse con una tabla de `clientes`.
+
+---
+
+## 🔢 Tipos de Datos en PostgreSQL
+
+Antes de crear cualquier tabla, necesitas saber **qué tipos de información** puede guardar PostgreSQL.  
+Elegir el tipo correcto es como elegir el recipiente correcto: no pondrías agua en una bolsa de papel.
+
+### 📐 Numéricos
+
+| Tipo                            |  Tamaño  | Rango / Descripción             | Cuándo Usarlo                                                              |
+| :------------------------------ | :------: | :------------------------------ | :------------------------------------------------------------------------- |
+| `SMALLINT`                      | 2 bytes  | -32,768 a 32,767                | Contadores pequeños, códigos de estado                                     |
+| `INTEGER` / `INT`               | 4 bytes  | -2,147,483,648 a 2,147,483,647  | IDs, cantidades, el más común                                              |
+| `BIGINT`                        | 8 bytes  | -9.2 × 10¹⁸ a 9.2 × 10¹⁸        | IDs de sistemas con millones de registros                                  |
+| `NUMERIC(p,s)` / `DECIMAL(p,s)` | Variable | Precisión exacta                | **Dinero, precios, cálculos financieros** ❗ Nunca uses `FLOAT` para dinero |
+| `REAL`                          | 4 bytes  | 6 dígitos de precisión          | Datos científicos, coordenadas aproximadas                                 |
+| `DOUBLE PRECISION`              | 8 bytes  | 15 dígitos de precisión         | Mediciones de mayor precisión                                              |
+| `SERIAL`                        | 4 bytes  | Autoincremental (1, 2, 3...)    | IDs autogenerados (atajo para INTEGER + SEQUENCE)                          |
+| `BIGSERIAL`                     | 8 bytes  | Autoincremental (entero grande) | IDs en tablas muy grandes                                                  |
+
+```sql
+-- Ejemplo: NUMERIC(10, 2) significa máximo 10 dígitos en total, 2 de ellos decimales
+-- Válido: 99999999.99  → 9 enteros + 2 decimales = 11... error
+-- Válido: 9999999.99   → 7 enteros + 2 decimales = 9 total ✅
+precio NUMERIC(10, 2)
+```
+
+### 🔤 Cadenas de Texto (Character)
+
+| Tipo         | Descripción                                              | Cuándo Usarlo                                                     |
+| :----------- | :------------------------------------------------------- | :---------------------------------------------------------------- |
+| `CHAR(n)`    | Longitud **fija**. Rellena con espacios si es más corto. | Códigos de longitud siempre igual (ej. código de país 'VE', 'US') |
+| `VARCHAR(n)` | Longitud **variable**, máximo `n` caracteres.            | Nombres, emails, textos cortos con límite definido                |
+| `TEXT`       | Longitud **ilimitada**.                                  | Descripciones largas, contenido de artículos, HTML                |
+
+```sql
+-- Ejemplo comparativo
+codigo_pais  CHAR(2),        -- Siempre 2 letras: 'VE', 'US', 'BR'
+nombre       VARCHAR(100),   -- Máximo 100 caracteres, puede ser menos
+descripcion  TEXT            -- Sin límite de tamaño
+```
+
+> 💡 **Tip PostgreSQL:** En PostgreSQL, `TEXT` y `VARCHAR` tienen el mismo rendimiento. Usa `VARCHAR(n)` cuando quieras imponer un límite de negocio, y `TEXT` cuando no haya límite natural.
+
+### 📅 Fechas y Tiempo (Temporal)
+
+| Tipo          | Descripción                                                              | Ejemplo                         |
+| :------------ | :----------------------------------------------------------------------- | :------------------------------ |
+| `DATE`        | Solo la fecha (año, mes, día).                                           | `'2025-12-31'`                  |
+| `TIME`        | Solo la hora (sin zona horaria).                                         | `'14:30:00'`                    |
+| `TIMETZ`      | Hora con zona horaria.                                                   | `'14:30:00-04:00'`              |
+| `TIMESTAMP`   | Fecha y hora combinadas (sin zona horaria).                              | `'2025-12-31 14:30:00'`         |
+| `TIMESTAMPTZ` | Fecha y hora con zona horaria. **El más recomendado para aplicaciones.** | `'2025-12-31 14:30:00-04:00'`   |
+| `INTERVAL`    | Una duración de tiempo.                                                  | `'3 days 4 hours'`, `'1 month'` |
+
+```sql
+-- Funciones de fecha más útiles
+SELECT NOW();                          -- Fecha y hora actual con zona horaria
+SELECT CURRENT_DATE;                   -- Solo la fecha de hoy
+SELECT CURRENT_TIME;                   -- Solo la hora actual
+SELECT NOW() - INTERVAL '7 days';     -- Hace 7 días
+SELECT EXTRACT(YEAR FROM NOW());       -- Extraer el año
+SELECT DATE_TRUNC('month', NOW());     -- Primer día del mes actual
+```
+
+### 🗂️ Otros Tipos Importantes
+
+| Tipo      | Descripción                                                        | Caso de Uso                       |
+| :-------- | :----------------------------------------------------------------- | :-------------------------------- |
+| `BOOLEAN` | `true` / `false` / `NULL`                                          | Banderas, estados activo/inactivo |
+| `UUID`    | Identificador único universal (128 bits)                           | IDs distribuidos, APIs REST       |
+| `JSON`    | Texto JSON (sin validación de estructura interna)                  | Datos semiestructurados           |
+| `JSONB`   | JSON binario, **indexable y eficiente**. Recomendado sobre `JSON`. | Datos dinámicos, configuraciones  |
+| `ARRAY`   | Un arreglo de cualquier tipo                                       | Etiquetas, listas de opciones     |
+| `INET`    | Dirección IP (IPv4 o IPv6)                                         | Logs de acceso, redes             |
+| `BYTEA`   | Datos binarios (imágenes, archivos)                                | Almacenar archivos pequeños       |
+
+```sql
+-- Ejemplos de uso
+activo       BOOLEAN DEFAULT true,
+user_id      UUID DEFAULT gen_random_uuid(),
+config       JSONB,
+etiquetas    TEXT[],                     -- Array de texto
+ip_origen    INET
+```
+
+---
+
+## 🏗️ Estructura del Lenguaje SQL
+
+SQL no es un solo tipo de comando — se divide en **4 categorías** según lo que hacen:
+
+```
+SQL
+├── DDL  → Define la estructura (crea, modifica, elimina objetos)
+├── DML  → Manipula los datos (inserta, actualiza, borra)
+├── DCL  → Controla los accesos y permisos
+└── TCL  → Gestiona las transacciones
+```
+
+### 📐 DDL — Data Definition Language
+
+Define la **estructura** de la base de datos. Los cambios son automáticamente permanentes.
+
+| Comando    | Qué hace                                            |
+| :--------- | :-------------------------------------------------- |
+| `CREATE`   | Crea un objeto (tabla, vista, índice, etc.)         |
+| `ALTER`    | Modifica la estructura de un objeto                 |
+| `DROP`     | Elimina un objeto **permanentemente**               |
+| `TRUNCATE` | Vacía una tabla (borra todos los datos, muy rápido) |
+
+```sql
+CREATE TABLE productos (...);       -- Crear
+ALTER TABLE productos ADD COLUMN descuento NUMERIC(5,2);  -- Modificar
+DROP TABLE productos;               -- Eliminar
+TRUNCATE TABLE logs;                -- Vaciar (más rápido que DELETE)
+```
+
+### ✏️ DML — Data Manipulation Language
+
+Trabaja con los **datos** dentro de los objetos. Puede deshacerse con `ROLLBACK`.
+
+| Comando  | Qué hace                      |
+| :------- | :---------------------------- |
+| `SELECT` | Lee/consulta datos            |
+| `INSERT` | Agrega nuevos registros       |
+| `UPDATE` | Modifica registros existentes |
+| `DELETE` | Elimina registros específicos |
+
+```sql
+SELECT nombre FROM clientes WHERE activo = true;
+INSERT INTO clientes (nombre, email) VALUES ('Ana', 'ana@mail.com');
+UPDATE clientes SET activo = false WHERE id = 5;
+DELETE FROM clientes WHERE id = 5;
+```
+
+### 🔑 DCL — Data Control Language
+
+Controla **quién puede hacer qué** en la base de datos.
+
+| Comando  | Qué hace                           |
+| :------- | :--------------------------------- |
+| `GRANT`  | Otorga permisos a un usuario o rol |
+| `REVOKE` | Quita permisos a un usuario o rol  |
+
+```sql
+GRANT SELECT ON TABLE clientes TO usuario_reportes;
+REVOKE INSERT ON TABLE clientes FROM usuario_reportes;
+```
+
+> 📖 Ver sección completa: [Gestión de Permisos (GRANT)](#-gestión-de-permisos-grant)
+
+### 🔄 TCL — Transaction Control Language
+
+Gestiona **transacciones**: grupos de operaciones que deben ejecutarse todas o ninguna.
+
+> **Analogía:** Es como una transferencia bancaria. O se descuenta de tu cuenta Y se acredita en la otra, o no pasa nada. No puede pasar "a medias".
+
+| Comando     | Qué hace                                   |
+| :---------- | :----------------------------------------- |
+| `BEGIN`     | Inicia una transacción                     |
+| `COMMIT`    | Confirma y guarda todos los cambios        |
+| `ROLLBACK`  | Deshace todos los cambios desde el `BEGIN` |
+| `SAVEPOINT` | Crea un punto de restauración intermedio   |
+
+```sql
+BEGIN;
+    UPDATE cuentas SET saldo = saldo - 500 WHERE id = 1;  -- Débito
+    UPDATE cuentas SET saldo = saldo + 500 WHERE id = 2;  -- Crédito
+COMMIT;  -- Solo se guarda si ambos UPDATE fueron exitosos
+```
+
+```sql
+-- Ejemplo con ROLLBACK ante un error
+BEGIN;
+    DELETE FROM pedidos WHERE cliente_id = 99;
+    -- ¡Ups! Me equivoqué, no era ese cliente
+ROLLBACK;  -- Deshace el DELETE, los datos están intactos
+```
+
+---
+
+## 📋 Tablas (Tables)
+
+Una **tabla** es la unidad básica de almacenamiento en SQL. Piénsala como una hoja de cálculo donde:
+- Las **columnas** definen qué datos se guardan (nombre, precio, fecha...).
+- Las **filas** son los registros individuales (cada producto, cada cliente...).
+
+### Crear una Tabla
+
+```sql
+CREATE TABLE productos (
+    -- Columna       Tipo de Dato      Restricción
+    id               SERIAL            PRIMARY KEY,
+    nombre           VARCHAR(150)      NOT NULL,
+    descripcion      TEXT,
+    precio           NUMERIC(10, 2)    NOT NULL DEFAULT 0.00,
+    stock            INTEGER           NOT NULL DEFAULT 0,
+    activo           BOOLEAN           NOT NULL DEFAULT true,
+    creado_en        TIMESTAMPTZ       NOT NULL DEFAULT NOW()
+);
+```
+
+### Modificar una Tabla (ALTER TABLE)
+
+```sql
+-- Agregar una columna nueva
+ALTER TABLE productos ADD COLUMN categoria VARCHAR(50);
+
+-- Eliminar una columna
+ALTER TABLE productos DROP COLUMN categoria;
+
+-- Cambiar el tipo de dato de una columna
+ALTER TABLE productos ALTER COLUMN descripcion TYPE VARCHAR(500);
+
+-- Renombrar una columna
+ALTER TABLE productos RENAME COLUMN nombre TO nombre_producto;
+
+-- Renombrar la tabla
+ALTER TABLE productos RENAME TO catalogo_productos;
+
+-- Agregar un valor por defecto a una columna existente
+ALTER TABLE productos ALTER COLUMN activo SET DEFAULT true;
+```
+
+### Eliminar una Tabla
+
+```sql
+-- Eliminar una tabla (¡Irreversible!)
+DROP TABLE productos;
+
+-- Eliminar solo si existe (evita errores si no existe)
+DROP TABLE IF EXISTS productos;
+
+-- Eliminar aunque otras tablas dependan de ella (¡Peligroso!)
+DROP TABLE productos CASCADE;
+```
+
+### Vaciar una tabla (TRUNCATE)
+
+```sql
+-- Borra TODOS los datos pero conserva la estructura
+-- Mucho más rápido que DELETE sin WHERE en tablas grandes
+TRUNCATE TABLE logs;
+
+-- Vaciar y reiniciar los contadores SERIAL/SEQUENCE
+TRUNCATE TABLE pedidos RESTART IDENTITY;
+```
+
+> ⚠️ **TRUNCATE vs DELETE:**  
+> - `TRUNCATE` elimina TODOS los registros de golpe, no se puede filtrar con `WHERE`, y no activa triggers de fila.  
+> - `DELETE` puede tener `WHERE`, activa triggers, y puede deshacerse con `ROLLBACK`.
+
+---
+
+## 🔒 Tipos de Constraints (Restricciones)
+
+Los **constraints** son reglas que PostgreSQL aplica automáticamente para garantizar la integridad de los datos.  
+Son como los validadores de un formulario, pero a nivel de base de datos — **irrompibles**.
+
+### PRIMARY KEY — La Llave Única
+
+Identifica **inequívocamente** cada fila de la tabla. No puede ser `NULL` ni repetirse.
+
+```sql
+-- Forma 1: Inline (en la definición de la columna)
+CREATE TABLE usuarios (
+    id SERIAL PRIMARY KEY,
+    nombre VARCHAR(100)
+);
+
+-- Forma 2: Al final de la tabla
+CREATE TABLE usuarios (
+    id SERIAL,
+    nombre VARCHAR(100),
+    CONSTRAINT pk_usuarios PRIMARY KEY (id)
+);
+
+-- PRIMARY KEY compuesta (cuando la combinación de columnas es la clave)
+CREATE TABLE orden_producto (
+    orden_id   INTEGER,
+    producto_id INTEGER,
+    cantidad   INTEGER,
+    PRIMARY KEY (orden_id, producto_id)  -- La combinación debe ser única
+);
+```
+
+### NOT NULL — Campo Obligatorio
+
+Impide que una columna quede en blanco.
+
+```sql
+CREATE TABLE clientes (
+    id     SERIAL PRIMARY KEY,
+    nombre VARCHAR(100) NOT NULL,   -- Obligatorio
+    email  VARCHAR(200) NOT NULL,   -- Obligatorio
+    telefono VARCHAR(20)            -- Opcional (puede ser NULL)
+);
+```
+
+### UNIQUE — Sin Duplicados
+
+Garantiza que no haya dos filas con el mismo valor en esa columna.
+
+```sql
+CREATE TABLE usuarios (
+    id    SERIAL PRIMARY KEY,
+    email VARCHAR(200) NOT NULL UNIQUE,   -- No pueden repetirse emails
+    dni   VARCHAR(20)  UNIQUE            -- Tampoco el DNI
+);
+
+-- UNIQUE compuesto (la COMBINACIÓN debe ser única)
+CREATE TABLE inscripciones (
+    usuario_id INTEGER,
+    curso_id   INTEGER,
+    UNIQUE (usuario_id, curso_id)  -- Un usuario no puede inscribirse dos veces al mismo curso
+);
+```
+
+### FOREIGN KEY — Relación Entre Tablas
+
+Garantiza que un valor en una columna **exista** en otra tabla. Es la base de las relaciones.
+
+```sql
+CREATE TABLE pedidos (
+    id          SERIAL PRIMARY KEY,
+    cliente_id  INTEGER NOT NULL,
+    total       NUMERIC(12, 2),
+    
+    -- La clave foránea: cliente_id debe existir en la tabla clientes
+    CONSTRAINT fk_pedidos_cliente
+        FOREIGN KEY (cliente_id)
+        REFERENCES clientes(id)
+        ON DELETE RESTRICT   -- No permite borrar un cliente si tiene pedidos
+        ON UPDATE CASCADE    -- Si cambia el ID del cliente, actualiza aquí también
+);
+```
+
+**Opciones para `ON DELETE` / `ON UPDATE`:**
+
+| Opción        | Comportamiento                                                    |
+| :------------ | :---------------------------------------------------------------- |
+| `RESTRICT`    | Bloquea la operación si hay registros dependientes.               |
+| `CASCADE`     | Propaga el cambio automáticamente (borra/actualiza los hijos).    |
+| `SET NULL`    | Pone `NULL` en la columna de la tabla hija.                       |
+| `SET DEFAULT` | Restaura el valor por defecto de la columna hija.                 |
+| `NO ACTION`   | Igual que `RESTRICT`, pero verificado al final de la transacción. |
+
+### CHECK — Validación de Rango o Lógica
+
+Valida que el valor cumpla una condición personalizada.
+
+```sql
+CREATE TABLE productos (
+    id     SERIAL PRIMARY KEY,
+    nombre VARCHAR(150) NOT NULL,
+    precio NUMERIC(10, 2) CHECK (precio >= 0),               -- No puede ser negativo
+    stock  INTEGER        CHECK (stock >= 0),                 -- Tampoco el stock
+    rating NUMERIC(2,1)   CHECK (rating BETWEEN 0.0 AND 5.0) -- Rating de 0 a 5
+);
+
+-- CHECK con nombre (más descriptivo en los errores)
+CREATE TABLE empleados (
+    id     SERIAL PRIMARY KEY,
+    nombre VARCHAR(100) NOT NULL,
+    salario NUMERIC(10,2),
+    CONSTRAINT chk_salario_positivo CHECK (salario > 0)
+);
+```
+
+### DEFAULT — Valor por Defecto
+
+Establece un valor automático cuando no se especifica uno al insertar.
+
+```sql
+CREATE TABLE articulos (
+    id         SERIAL PRIMARY KEY,
+    titulo     VARCHAR(200) NOT NULL,
+    publicado  BOOLEAN      DEFAULT false,         -- Por defecto no publicado
+    vistas     INTEGER      DEFAULT 0,             -- Inicia en cero
+    creado_en  TIMESTAMPTZ  DEFAULT NOW(),         -- Fecha actual automática
+    region     VARCHAR(20)  DEFAULT 'LATAM'
+);
+```
+
+### Agregar y Quitar Constraints Posteriormente
+
+```sql
+-- Agregar un NOT NULL después de crear la tabla
+ALTER TABLE productos ALTER COLUMN precio SET NOT NULL;
+
+-- Agregar un UNIQUE
+ALTER TABLE usuarios ADD CONSTRAINT uq_email UNIQUE (email);
+
+-- Agregar un CHECK
+ALTER TABLE productos ADD CONSTRAINT chk_precio CHECK (precio >= 0);
+
+-- Eliminar un constraint por su nombre
+ALTER TABLE productos DROP CONSTRAINT chk_precio;
+
+-- Ver constraints de una tabla
+SELECT conname, contype, pg_get_constraintdef(oid)
+FROM pg_constraint
+WHERE conrelid = 'productos'::regclass;
+```
+
+---
+
+## 👁️ Vistas (Views)
+
+Una **vista** es una consulta SQL guardada con un nombre. Desde afuera, se comporta exactamente como una tabla, pero **no almacena datos propios** — los lee de las tablas originales cada vez que la consultas.
+
+> **Analogía:** Una vista es como un "acceso directo" que cuando lo abres, ejecuta la consulta y te muestra el resultado actualizado.
+
+### ¿Para qué sirven?
+
+1. **Simplificar consultas complejas** — Guardas un `SELECT` complicado con múltiples JOINs y lo usas como si fuera una tabla simple.
+2. **Seguridad** — Das acceso a una vista (que muestra solo ciertas columnas) sin exponer la tabla completa.
+3. **Abstracción** — Si cambias la estructura interna, la vista sigue funcionando igual.
+
+### Crear una Vista
+
+```sql
+-- Vista simple
+CREATE VIEW vista_clientes_activos AS
+    SELECT id, nombre, email
+    FROM clientes
+    WHERE activo = true;
+
+-- Usarla como si fuera una tabla
+SELECT * FROM vista_clientes_activos;
+SELECT nombre FROM vista_clientes_activos WHERE email LIKE '%@gmail.com';
+```
+
+```sql
+-- Vista con JOIN: resume información de varias tablas
+CREATE VIEW vista_resumen_pedidos AS
+    SELECT
+        p.id           AS pedido_id,
+        c.nombre       AS cliente,
+        p.total,
+        p.creado_en    AS fecha
+    FROM pedidos p
+    JOIN clientes c ON p.cliente_id = c.id;
+```
+
+### Reemplazar o Eliminar una Vista
+
+```sql
+-- Reemplazar (actualizar) una vista existente
+CREATE OR REPLACE VIEW vista_clientes_activos AS
+    SELECT id, nombre, email, telefono  -- Ahora también incluimos teléfono
+    FROM clientes
+    WHERE activo = true;
+
+-- Eliminar una vista
+DROP VIEW IF EXISTS vista_clientes_activos;
+```
+
+### Vista Materializada (MATERIALIZED VIEW)
+
+Una vista materializada **sí almacena los datos** físicamente. Esto la hace muy rápida para consultar, pero sus datos se "congelan" hasta que la refrescas manualmente.
+
+```sql
+-- Crear vista materializada (guarda los datos en disco)
+CREATE MATERIALIZED VIEW resumen_ventas_mensual AS
+    SELECT
+        DATE_TRUNC('month', creado_en) AS mes,
+        COUNT(*)                        AS total_pedidos,
+        SUM(total)                      AS ingresos
+    FROM pedidos
+    GROUP BY 1
+    ORDER BY 1;
+
+-- Actualizar sus datos cuando lo necesites
+REFRESH MATERIALIZED VIEW resumen_ventas_mensual;
+
+-- Usarla
+SELECT * FROM resumen_ventas_mensual;
+```
+
+> **¿Cuándo usar cuál?**
+> - **Vista normal:** datos siempre actualizados, consultas simples o medianas.
+> - **Vista materializada:** reportes/dashboards pesados que se consultan mucho pero los datos no cambian a cada segundo.
+
+---
+
+## 🔢 Secuencias (Sequences)
+
+Una **secuencia** es un generador de números únicos y consecutivos. Es lo que hay "detrás" de los tipos `SERIAL` y `BIGSERIAL`.
+
+> **Analogía:** Es como un ticket de turno en un banco — cada vez que pides uno, te da el siguiente número disponible, sin repetirse nunca.
+
+### Crear y Usar una Secuencia
+
+```sql
+-- Crear una secuencia manualmente
+CREATE SEQUENCE seq_numero_factura
+    START WITH 1000     -- Empieza en 1000
+    INCREMENT BY 1      -- Sube de uno en uno
+    MINVALUE 1000
+    MAXVALUE 9999999
+    NO CYCLE;           -- Lanza error cuando llega al máximo (no reinicia)
+
+-- Obtener el próximo número
+SELECT NEXTVAL('seq_numero_factura');   -- Resultado: 1000
+
+-- Ver el valor actual (sin avanzar)
+SELECT CURRVAL('seq_numero_factura');   -- Resultado: 1000
+
+-- Usar en un INSERT
+INSERT INTO facturas (numero, cliente_id)
+VALUES (NEXTVAL('seq_numero_factura'), 5);
+```
+
+### Conectar una Secuencia a una Tabla
+
+```sql
+-- Crear tabla usando la secuencia como valor por defecto
+CREATE TABLE facturas (
+    id        INTEGER    DEFAULT NEXTVAL('seq_numero_factura') PRIMARY KEY,
+    cliente_id INTEGER   NOT NULL,
+    total      NUMERIC(12,2)
+);
+```
+
+### Lo que hace SERIAL "por dentro"
+
+Cuando escribes `SERIAL`, PostgreSQL hace exactamente esto:
+
+```sql
+-- Esto:
+CREATE TABLE usuarios (id SERIAL PRIMARY KEY);
+
+-- Es equivalente a esto:
+CREATE SEQUENCE usuarios_id_seq;
+CREATE TABLE usuarios (
+    id INTEGER DEFAULT NEXTVAL('usuarios_id_seq') NOT NULL
+);
+ALTER SEQUENCE usuarios_id_seq OWNED BY usuarios.id;
+```
+
+### Operaciones Útiles
+
+```sql
+-- Ver todas las secuencias en la base de datos
+SELECT * FROM information_schema.sequences;
+
+-- Reiniciar una secuencia a un valor específico (útil tras truncar una tabla)
+ALTER SEQUENCE seq_numero_factura RESTART WITH 1000;
+
+-- Eliminar una secuencia
+DROP SEQUENCE IF EXISTS seq_numero_factura;
+```
+
+---
+
+## 🏷️ Domains (Dominios)
+
+Un **Domain** es un tipo de dato personalizado con reglas adicionales integradas.  
+Es como crear tu propio tipo de dato que lleva sus restricciones incluidas — defines las reglas una vez y las reutilizas en muchas tablas.
+
+> **Analogía:** Imagina que en tu empresa usas siempre el mismo formato de código de producto: "Letras mayúsculas + 4 números" (ej. `PROD1234`). En lugar de repetir el `CHECK` en cada tabla, creas un tipo `codigo_producto` con esa regla, y lo usas donde quieras.
+
+### Crear un Domain
+
+```sql
+-- Domain para correos electrónicos (con validación de formato)
+CREATE DOMAIN email_valido AS TEXT
+    CHECK (VALUE ~ '^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$');
+
+-- Domain para precios (nunca negativos)
+CREATE DOMAIN precio_positivo AS NUMERIC(12, 2)
+    NOT NULL
+    DEFAULT 0.00
+    CHECK (VALUE >= 0);
+
+-- Domain para porcentajes (entre 0 y 100)
+CREATE DOMAIN porcentaje AS NUMERIC(5, 2)
+    CHECK (VALUE BETWEEN 0 AND 100);
+
+-- Domain para estado de un registro (enum-like)
+CREATE DOMAIN estado_registro AS SMALLINT
+    NOT NULL
+    DEFAULT 1
+    CHECK (VALUE IN (0, 1, 2));  -- 0=inactivo, 1=activo, 2=suspendido
+```
+
+### Usar un Domain en una Tabla
+
+```sql
+-- Ahora el tipo de la columna es el domain, con todas sus reglas incluidas
+CREATE TABLE empleados (
+    id         SERIAL           PRIMARY KEY,
+    email      email_valido     NOT NULL UNIQUE,  -- Valida formato automáticamente
+    salario    precio_positivo,                   -- Nunca negativo
+    comision   porcentaje,                        -- Entre 0 y 100
+    estado     estado_registro                    -- Solo 0, 1 o 2
+);
+
+-- Si intentas insertar un email inválido, PostgreSQL lo rechaza:
+INSERT INTO empleados (email, salario) VALUES ('no-es-un-email', 5000.00);
+-- ERROR: value for domain email_valido violates check constraint
+```
+
+### Modificar y Eliminar Domains
+
+```sql
+-- Agregar una restricción a un domain existente
+ALTER DOMAIN precio_positivo ADD CONSTRAINT precio_max CHECK (VALUE <= 999999.99);
+
+-- Eliminar una restricción del domain
+ALTER DOMAIN precio_positivo DROP CONSTRAINT precio_max;
+
+-- Eliminar el domain (solo si no está en uso)
+DROP DOMAIN IF EXISTS estado_registro;
+```
+
+### Ver los Domains Existentes
+
+```sql
+SELECT typname, typtype
+FROM pg_type
+WHERE typtype = 'd';   -- 'd' = domain
+```
+
+---
+
+## 🔗 Tipos de JOINs
+
+Los **JOINs** son la operación más poderosa de SQL: combinan filas de dos o más tablas basándose en una condición.
+
+Para todos los ejemplos, usamos estas dos tablas:
+
+```sql
+-- Tabla A: clientes
+| id  | nombre  |
+| --- | ------- |
+| 1   | Ana     |
+| 2   | Carlos  |
+| 3   | Beatriz |
+
+-- Tabla B: pedidos (algunos clientes no tienen pedidos, hay pedidos sin cliente válido)
+| id  | cliente_id | total  |
+| --- | ---------- | ------ |
+| 1   | 1          | 200.00 |
+| 2   | 1          | 350.00 |
+| 3   | 2          | 80.00  |
+| 4   | 99         | 500.00 | ← cliente_id 99 no existe en clientes |
+```
+
+### INNER JOIN — Solo los que coinciden en ambas tablas
+
+El más común. Retorna filas que tienen **coincidencia en ambos lados**.
+
+```
+Resultado: filas de A ∩ B
+```
+
+```sql
+SELECT c.nombre, p.total
+FROM clientes c
+INNER JOIN pedidos p ON c.id = p.cliente_id;
+
+-- Resultado:
+| --  | nombre | total  |
+| --- | ------ | ------ |
+| --  | Ana    | 200.00 |
+| --  | Ana    | 350.00 |
+| --  | Carlos | 80.00  |
+-- Beatriz no aparece (no tiene pedidos)
+-- El pedido 4 no aparece (su cliente_id 99 no existe)
+```
+
+### LEFT JOIN — Todos los de la izquierda, aunque no tengan pareja
+
+Retorna **todas las filas de la tabla izquierda** y las coincidencias de la derecha (si no hay, pone `NULL`).
+
+```
+Resultado: todo A + lo que coincida de B
+```
+
+```sql
+SELECT c.nombre, p.total
+FROM clientes c
+LEFT JOIN pedidos p ON c.id = p.cliente_id;
+
+-- Resultado:
+| --  | nombre  | total  |
+| --- | ------- | ------ |
+| --  | Ana     | 200.00 |
+| --  | Ana     | 350.00 |
+| --  | Carlos  | 80.00  |
+| --  | Beatriz | NULL   | ← Beatriz aparece, pero sin pedidos (NULL) |
+```
+
+> **Caso de uso típico:** Listar todos los clientes, incluyendo los que aún no han comprado.
+
+### RIGHT JOIN — Todos los de la derecha, aunque no tengan pareja
+
+Opuesto al `LEFT JOIN`. En la práctica, es raramente usado porque siempre puedes reescribirlo como un `LEFT JOIN` invirtiendo el orden de las tablas.
+
+```sql
+SELECT c.nombre, p.total
+FROM clientes c
+RIGHT JOIN pedidos p ON c.id = p.cliente_id;
+
+-- Resultado:
+| --  | nombre | total  |
+| --- | ------ | ------ |
+| --  | Ana    | 200.00 |
+| --  | Ana    | 350.00 |
+| --  | Carlos | 80.00  |
+| --  | NULL   | 500.00 | ← Pedido huérfano (cliente_id 99 no existe) |
+```
+
+### FULL OUTER JOIN — Todo, sin excepción
+
+Combina `LEFT` y `RIGHT` JOIN. Devuelve **todas las filas de ambas tablas**, con `NULL` donde no hay coincidencia.
+
+```sql
+SELECT c.nombre, p.total
+FROM clientes c
+FULL OUTER JOIN pedidos p ON c.id = p.cliente_id;
+
+-- Resultado:
+| --  | nombre  | total  |
+| --- | ------- | ------ |
+| --  | Ana     | 200.00 |
+| --  | Ana     | 350.00 |
+| --  | Carlos  | 80.00  |
+| --  | Beatriz | NULL   | ← Cliente sin pedidos       |
+| --  | NULL    | 500.00 | ← Pedido sin cliente válido |
+```
+
+> **Caso de uso:** Auditoría para encontrar registros huérfanos en cualquier dirección.
+
+### CROSS JOIN — El producto cartesiano
+
+Combina **cada fila de A con cada fila de B**. Raramente útil en producción, pero tiene casos específicos.
+
+```sql
+-- Con 3 clientes y 4 pedidos → resultado: 3 × 4 = 12 filas
+SELECT c.nombre, p.total
+FROM clientes c
+CROSS JOIN pedidos p;
+```
+
+> **Caso de uso:** Generar combinaciones de tallas × colores para un catálogo de productos.
+
+### SELF JOIN — Una tabla unida consigo misma
+
+Se usa cuando una tabla tiene una relación jerárquica **consigo misma** (ej. empleados y su jefe directo).
+
+```sql
+-- Tabla empleados con columna jefe_id que apunta al mismo id
+SELECT
+    e.nombre     AS empleado,
+    j.nombre     AS jefe
+FROM empleados e
+LEFT JOIN empleados j ON e.jefe_id = j.id;
+
+-- Resultado:
+| --  | empleado | jefe |
+| --- | -------- | ---- |
+| --  | Carlos   | Ana  |
+| --  | Beatriz  | Ana  |
+| --  | Ana      | NULL | ← Ana no tiene jefe (es la directora) |
+```
+
+### Resumen Visual de los JOINs
+
+```
+CLIENTES (A)    PEDIDOS (B)
+
+INNER JOIN:        A ∩ B         (solo los que coinciden)
+LEFT JOIN:         A + (A ∩ B)   (todos de A)
+RIGHT JOIN:        (A ∩ B) + B   (todos de B)
+FULL OUTER JOIN:   A + (A ∩ B) + B (todos de ambos)
+CROSS JOIN:        A × B         (todas las combinaciones posibles)
+```
+
+```sql
+-- Tip: Cuando necesitas múltiples JOINs, siempre alinea las condiciones ON
+SELECT
+    o.id          AS orden,
+    c.nombre      AS cliente,
+    p.nombre      AS producto,
+    op.cantidad,
+    op.cantidad * p.precio AS subtotal
+FROM ordenes o
+JOIN clientes  c  ON o.cliente_id  = c.id
+JOIN orden_producto op ON o.id = op.orden_id
+JOIN productos p  ON op.producto_id = p.id
+WHERE o.creado_en >= CURRENT_DATE - INTERVAL '30 days'
+ORDER BY o.id;
+```
+
+---
+
+# 🧰 Temas Avanzados de SQL
+
+---
+
+## ⚡ Funciones SQL Útiles
+
+PostgreSQL incluye cientos de funciones incorporadas. Aquí están las más usadas en el día a día, agrupadas por categoría.
+
+---
+
+### 📊 Funciones de Agregación
+
+Las funciones de agregación **resumen** muchas filas en un solo valor. Se usan casi siempre con `GROUP BY`.
+
+| Función      | Descripción                              | Ejemplo                              |
+| :----------- | :--------------------------------------- | :----------------------------------- |
+| `COUNT(*)`   | Cuenta todas las filas                   | `SELECT COUNT(*) FROM pedidos;`      |
+| `COUNT(col)` | Cuenta filas donde la columna NO es NULL | `SELECT COUNT(email) FROM clientes;` |
+| `SUM(col)`   | Suma los valores                         | `SELECT SUM(total) FROM pedidos;`    |
+| `AVG(col)`   | Promedio de los valores                  | `SELECT AVG(precio) FROM productos;` |
+| `MIN(col)`   | El valor más pequeño                     | `SELECT MIN(precio) FROM productos;` |
+| `MAX(col)`   | El valor más grande                      | `SELECT MAX(created_at) FROM logs;`  |
+
+```sql
+-- Ejemplo completo con GROUP BY
+-- "¿Cuántos pedidos y cuánto facturó cada cliente?"
+SELECT
+    c.nombre,
+    COUNT(p.id)    AS total_pedidos,
+    SUM(p.total)   AS facturado,
+    AVG(p.total)   AS ticket_promedio,
+    MAX(p.total)   AS pedido_mas_grande
+FROM clientes c
+LEFT JOIN pedidos p ON c.id = p.cliente_id
+GROUP BY c.id, c.nombre
+ORDER BY facturado DESC NULLS LAST;
+```
+
+> 💡 **HAVING vs WHERE:** `WHERE` filtra **antes** de agrupar, `HAVING` filtra **después** de agrupar.
+
+```sql
+-- Solo clientes que han gastado más de $1000 en total
+SELECT c.nombre, SUM(p.total) AS total_gastado
+FROM clientes c
+JOIN pedidos p ON c.id = p.cliente_id
+GROUP BY c.nombre
+HAVING SUM(p.total) > 1000;
+```
+
+---
+
+### 🔤 Funciones de Texto (String)
+
+| Función                  | Descripción                                             | Ejemplo                                 | Resultado                    |
+| :----------------------- | :------------------------------------------------------ | :-------------------------------------- | :--------------------------- |
+| `UPPER(s)`               | Convierte a mayúsculas                                  | `UPPER('hola')`                         | `'HOLA'`                     |
+| `LOWER(s)`               | Convierte a minúsculas                                  | `LOWER('HOLA')`                         | `'hola'`                     |
+| `INITCAP`                | Convierte la primera letra de cada palabra en mayúscula | `INITCAP('ana garzon')`                 | `'Ana Garzon'`               |
+| `LENGTH(s)`              | Número de caracteres                                    | `LENGTH('hola')`                        | `4`                          |
+| `TRIM(s)`                | Elimina espacios al inicio y final                      | `TRIM('  hola  ')`                      | `'hola'`                     |
+| `LTRIM(s)` / `RTRIM(s)`  | Elimina espacios solo a la izquierda/derecha            | `LTRIM('  hola')`                       | `'hola'`                     |
+| `SUBSTRING(s, ini, len)` | Extrae una parte del texto                              | `SUBSTRING('hola mundo', 1, 4)`         | `'hola'`                     |
+| `POSITION(sub IN s)`     | Posición de una subcadena                               | `POSITION('mundo' IN 'hola mundo')`     | `6`                          |
+| `REPLACE(s, old, new)`   | Reemplaza texto                                         | `REPLACE('hola mundo', 'mundo', 'SQL')` | `'hola SQL'`                 |
+| `CONCAT(s1, s2, ...)`    | Une cadenas                                             | `CONCAT('hola', ' ', 'mundo')`          | `'hola mundo'`               |
+| `\|\|`                   | Operador de concatenación                               | `'hola' \|\| ' mundo'`                  | `'hola mundo'`               |
+| `SPLIT_PART(s, sep, n)`  | Divide por separador y toma la n-ésima parte            | `SPLIT_PART('a,b,c', ',', 2)`           | `'b'`                        |
+| `LIKE`                   | Búsqueda por patrón (`%` = cualquier cosa)              | `WHERE nombre LIKE 'Ana%'`              | Nombres que empiezan con Ana |
+| `ILIKE`                  | Igual que LIKE pero sin distinción mayúsculas           | `WHERE email ILIKE '%@GMAIL%'`          | Insensible a mayúsculas      |
+
+
+```sql
+-- Ejemplo práctico: normalizar un nombre al guardarlo
+INSERT INTO clientes (nombre, email)
+VALUES (
+    TRIM(INITCAP('  ana GARZon  ')),    -- 'Ana Garzon'
+    LOWER(TRIM('  ANA@GMAIL.COM  '))    -- 'ana@gmail.com'
+);
+```
+
+---
+
+### 📅 Funciones de Fecha y Tiempo
+
+```sql
+-- Fecha y hora actual
+SELECT NOW();                           -- 2025-10-21 14:30:00.123456-04
+
+-- Solo fecha / solo hora
+SELECT CURRENT_DATE;                    -- 2025-10-21
+SELECT CURRENT_TIME;                    -- 14:30:00.123456-04
+
+-- Aritmética con fechas
+SELECT NOW() + INTERVAL '30 days';     -- 30 días en el futuro
+SELECT NOW() - INTERVAL '1 year';      -- Hace un año
+SELECT '2025-12-31'::DATE - CURRENT_DATE AS dias_para_fin_de_anio;
+
+-- Extraer partes de una fecha
+SELECT EXTRACT(YEAR  FROM NOW());       -- 2025
+SELECT EXTRACT(MONTH FROM NOW());       -- 10
+SELECT EXTRACT(DOW   FROM NOW());       -- 2  (0=Dom, 1=Lun, ... 6=Sáb)
+
+-- Truncar a una unidad (devuelve el inicio del período)
+SELECT DATE_TRUNC('month', NOW());      -- 2025-10-01 00:00:00
+SELECT DATE_TRUNC('year',  NOW());      -- 2025-01-01 00:00:00
+SELECT DATE_TRUNC('week',  NOW());      -- Lunes de la semana actual
+
+-- Diferencia entre dos fechas
+SELECT AGE('2025-12-31', '1990-06-15');  -- 35 years 6 months 16 days
+
+-- Convertir zona horaria
+SELECT NOW() AT TIME ZONE 'America/New_York';
+SELECT NOW() AT TIME ZONE 'UTC';
+
+-- Formatear una fecha como texto
+SELECT TO_CHAR(NOW(), 'DD/MM/YYYY HH24:MI');     -- '21/10/2025 14:30'
+SELECT TO_CHAR(NOW(), 'Day, DD "de" Month YYYY'); -- 'Tuesday, 21 de October  2025'
+```
+
+---
+
+### 🤔 Funciones Condicionales
+
+#### CASE WHEN — El "if/else" de SQL
+
+```sql
+-- Forma 1: CASE buscado (condiciones independientes)
+SELECT
+    nombre,
+    precio,
+    CASE
+        WHEN precio < 10    THEN 'Económico'
+        WHEN precio < 50    THEN 'Moderado'
+        WHEN precio < 200   THEN 'Premium'
+        ELSE                     'Lujo'
+    END AS categoria_precio
+FROM productos;
+
+-- Forma 2: CASE simple (comparar una sola columna)
+SELECT
+    nombre,
+    estado,
+    CASE estado
+        WHEN 1 THEN 'Activo'
+        WHEN 0 THEN 'Inactivo'
+        WHEN 2 THEN 'Suspendido'
+        ELSE 'Desconocido'
+    END AS estado_texto
+FROM empleados;
+```
+
+#### COALESCE — El primer valor no-NULL
+
+```sql
+-- Devuelve el primer valor que NO sea NULL
+SELECT COALESCE(telefono, celular, 'Sin contacto') AS contacto
+FROM clientes;
+-- Si telefono es NULL y celular tiene valor → devuelve celular
+-- Si ambos son NULL → devuelve 'Sin contacto'
+```
+
+#### NULLIF — Convierte un valor en NULL
+
+```sql
+-- Devuelve NULL si los dos argumentos son iguales
+-- Evita divisiones por cero:
+SELECT total / NULLIF(cantidad, 0) AS precio_unitario
+FROM pedidos;
+-- Si cantidad = 0 → NULLIF devuelve NULL → división devuelve NULL (no error)
+```
+
+#### GREATEST / LEAST
+
+```sql
+-- Devuelve el mayor/menor entre una lista de valores
+SELECT GREATEST(precio, precio_especial, precio_minimo) AS precio_final;
+SELECT LEAST(10, 5, 8, 3, 12);   -- Resultado: 3
+```
+
+---
+
+### 🪟 Funciones de Ventana (Window Functions)
+
+Las funciones de ventana calculan un resultado sobre un **conjunto de filas relacionadas** sin colapsar el resultado (a diferencia de `GROUP BY`).
+
+```sql
+-- ROW_NUMBER: asigna un número de fila dentro de cada grupo
+SELECT
+    nombre,
+    departamento,
+    salario,
+    ROW_NUMBER() OVER (PARTITION BY departamento ORDER BY salario DESC) AS ranking
+FROM empleados;
+-- Cada empleado tiene su puesto de ranking dentro de su departamento
+
+-- RANK: como ROW_NUMBER pero empata y salta números
+-- DENSE_RANK: empata pero NO salta números
+
+-- LAG / LEAD: acceder a la fila anterior o siguiente
+SELECT
+    mes,
+    ventas,
+    LAG(ventas, 1) OVER (ORDER BY mes)  AS ventas_mes_anterior,
+    ventas - LAG(ventas, 1) OVER (ORDER BY mes)  AS diferencia
+FROM ventas_mensuales;
+
+-- SUM acumulado (running total)
+SELECT
+    fecha,
+    monto,
+    SUM(monto) OVER (ORDER BY fecha) AS total_acumulado
+FROM transacciones;
+```
+
+---
+
+## 🖨️ FORMAT() — Formateo de Texto en SQL
+
+`FORMAT()` es la función de PostgreSQL para construir cadenas de texto con **placeholders**, similar al `printf` de C o f-strings de Python. Muy útil para construir mensajes dinámicos o SQL dinámico con `EXECUTE`.
+
+### Sintaxis
+
+```sql
+FORMAT(cadena_formato, argumento1, argumento2, ...)
+```
+
+### Especificadores de Formato
+
+| Especificador | Descripción                                              | Ejemplo                                                                  |
+| :------------ | :------------------------------------------------------- | :----------------------------------------------------------------------- |
+| `%s`          | Texto (string) simple                                    | `FORMAT('Hola %s', 'mundo')` → `'Hola mundo'`                            |
+| `%I`          | **Identificador** con comillas (nombre de tabla/columna) | `FORMAT('SELECT * FROM %I', 'mi tabla')` → `SELECT * FROM "mi tabla"`    |
+| `%L`          | **Literal** con comillas (valor de dato)                 | `FORMAT('WHERE nombre = %L', "O'Reilly")` → `WHERE nombre = 'O''Reilly'` |
+| `%%`          | El carácter literal `%`                                  | `FORMAT('100%%')` → `'100%'`                                             |
+
+> 🔐 **¿Por qué `%I` y `%L` son importantes?**  
+> Protegen contra **SQL Injection** al escapar automáticamente los valores. Siempre úsalos al construir SQL dinámico.
+
+### Ejemplos Prácticos
+
+```sql
+-- Mensaje simple
+SELECT FORMAT('Bienvenido, %s. Tienes %s pedidos pendientes.', nombre, pendientes)
+FROM clientes;
+
+-- Construir SQL dinámico de forma segura en una función
+DO $$
+DECLARE
+    tabla_nombre TEXT := 'ventas 2025';  -- Tiene un espacio → necesita comillas
+    columna TEXT := 'total';
+    valor_buscar TEXT := "O'Brien";       -- Tiene comilla simple → necesita escape
+    sql_query TEXT;
+BEGIN
+    -- %I maneja el espacio en el nombre de tabla
+    -- %L maneja la comilla simple en el valor
+    sql_query := FORMAT(
+        'SELECT %I FROM %I WHERE vendedor = %L',
+        columna,
+        tabla_nombre,
+        valor_buscar
+    );
+    -- Resultado: SELECT "total" FROM "ventas 2025" WHERE vendedor = 'O''Brien'
+    RAISE NOTICE '%', sql_query;
+END;
+$$;
+```
+
+```sql
+-- Uso en generación de mensajes de log
+INSERT INTO audit_log (mensaje, creado_en)
+VALUES (
+    FORMAT(
+        'Usuario %L eliminó el registro #%s de la tabla %I a las %s',
+        current_user,
+        42,
+        'pedidos',
+        TO_CHAR(NOW(), 'HH24:MI:SS')
+    ),
+    NOW()
+);
+```
+
+---
+
+## 🔬 Plan de Ejecución (EXPLAIN / EXPLAIN ANALYZE)
+
+Cuando ejecutas una consulta, PostgreSQL genera un **plan de ejecución**: una serie de pasos que decide seguir para obtener el resultado de la manera más eficiente posible.
+
+`EXPLAIN` te permite ver ese plan **sin ejecutar** la consulta.  
+`EXPLAIN ANALYZE` lo muestra **ejecutándola de verdad** y midiendo los tiempos reales.
+
+> **Analogía:** Es como el GPS de tu consulta. Te dice qué camino va a tomar, por qué eligió ese camino, y si usas `ANALYZE`, también te dice cuánto tardó cada tramo.
+
+### Uso Básico
+
+```sql
+-- Ver el plan estimado (sin ejecutar la consulta)
+EXPLAIN
+SELECT * FROM pedidos WHERE cliente_id = 5;
+
+-- Ver el plan REAL con tiempos reales (SÍ ejecuta la consulta)
+EXPLAIN ANALYZE
+SELECT * FROM pedidos WHERE cliente_id = 5;
+
+-- Formato más legible y detallado (recomendado)
+EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+SELECT p.id, c.nombre, p.total
+FROM pedidos p
+JOIN clientes c ON p.cliente_id = c.id
+WHERE p.total > 1000;
+```
+
+### Cómo Leer la Salida
+
+La salida es un árbol que se lee **de adentro hacia afuera** (el nodo más indentado se ejecuta primero):
+
+```
+Nested Loop  (cost=0.43..16.48 rows=1 width=36) (actual time=0.021..0.023 rows=1 loops=1)
+  ->  Index Scan using pedidos_pkey on pedidos p
+        (cost=0.29..8.31 rows=1 width=20) (actual time=0.012..0.013 rows=1 loops=1)
+        Index Cond: (id = 42)
+  ->  Index Scan using clientes_pkey on clientes c
+        (cost=0.14..8.16 rows=1 width=20) (actual time=0.007..0.008 rows=1 loops=1)
+        Index Cond: (id = p.cliente_id)
+Planning Time: 0.3 ms
+Execution Time: 0.05 ms
+```
+
+#### Glosario de la Salida
+
+| Término                | Significado                                                                                                                                            |
+| :--------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cost=inicio..total`   | Costo estimado por el planificador. `inicio` = costo hasta devolver la primera fila. `total` = costo total. No son segundos, son unidades arbitrarias. |
+| `rows=N`               | Filas estimadas que devolverá este nodo.                                                                                                               |
+| `actual time=ini..fin` | Tiempo real en milisegundos (solo con `ANALYZE`).                                                                                                      |
+| `loops=N`              | Cuántas veces se ejecutó este nodo.                                                                                                                    |
+| `width=N`              | Tamaño estimado en bytes de cada fila.                                                                                                                 |
+
+#### Tipos de Nodos Comunes
+
+| Nodo               | Qué hace                                                   | Señal                                                           |
+| :----------------- | :--------------------------------------------------------- | :-------------------------------------------------------------- |
+| `Seq Scan`         | Lee toda la tabla de principio a fin.                      | ⚠️ Lento en tablas grandes si hay un filtro. Considerar índice.  |
+| `Index Scan`       | Usa un índice para acceder a filas específicas.            | ✅ Eficiente para pocos resultados.                              |
+| `Index Only Scan`  | Lee todo desde el índice, sin tocar la tabla.              | ✅✅ Muy eficiente.                                               |
+| `Bitmap Heap Scan` | Usa el índice para crear un mapa de filas y luego las lee. | ✅ Para rangos o múltiples condiciones.                          |
+| `Hash Join`        | Une dos tablas usando una tabla hash en memoria.           | ✅ Bueno para tablas grandes sin índice en la columna de join.   |
+| `Nested Loop`      | Une tablas iterando fila por fila.                         | ✅ Excelente cuando la tabla interior es pequeña o tiene índice. |
+| `Merge Join`       | Une tablas ordenadas.                                      | ✅ Eficiente cuando ambos lados están ordenados.                 |
+| `Sort`             | Ordena las filas.                                          | ⚠️ Caro. Si aparece y hay `ORDER BY`, considera un índice.       |
+
+### Casos Comunes y Cómo Interpretarlos
+
+```sql
+-- CASO 1: Seq Scan en tabla grande → Candidato para índice
+EXPLAIN SELECT * FROM logs WHERE nivel = 'ERROR';
+-- Si muestra: Seq Scan on logs  (rows=1000000)
+-- → Crear índice: CREATE INDEX idx_logs_nivel ON logs(nivel);
+
+-- CASO 2: Verificar que se usa un índice existente
+EXPLAIN SELECT * FROM pedidos WHERE id = 42;
+-- Debe mostrar: Index Scan using pedidos_pkey on pedidos
+-- Si no lo muestra, el planificador decidió que no valía la pena (tabla muy pequeña)
+
+-- CASO 3: Ver uso de buffers (hits en caché vs lecturas en disco)
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT SUM(total) FROM pedidos WHERE creado_en > NOW() - INTERVAL '7 days';
+-- Buffers: shared hit=N   → N páginas leídas desde caché (rápido)
+-- Buffers: shared read=N  → N páginas leídas desde disco (lento)
+```
+
+> 💡 **Tip:** Puedes usar la extensión `pg_stat_statements` para encontrar las consultas más lentas de todo el sistema sin tener que hacer `EXPLAIN` una por una.
+
+---
+
+## 🔤 Quoting en PostgreSQL
+
+El **quoting** (uso de comillas) es una fuente frecuente de confusión. PostgreSQL usa diferentes tipos de comillas con significados completamente distintos.
+
+### 1. Comillas Simples `'texto'` — Para Valores de Datos (Literales)
+
+Se usan para encerrar **valores de texto, fechas**, etc. que son datos.
+
+```sql
+-- ✅ Correcto: texto es un valor, va entre comillas simples
+SELECT * FROM clientes WHERE nombre = 'Ana García';
+INSERT INTO logs (nivel) VALUES ('ERROR');
+SELECT '2025-10-21'::DATE;
+```
+
+**Escapar una comilla simple dentro del texto:** duplicarla (`''`)
+
+```sql
+-- El apellido O'Brien tiene comilla simple
+SELECT * FROM clientes WHERE apellido = 'O''Brien';
+--                                          ↑↑ dos comillas simples = una literal
+
+-- También puedes usar dollar quoting (ver más abajo)
+SELECT * FROM clientes WHERE apellido = $$ O'Brien $$;
+```
+
+### 2. Comillas Dobles `"nombre"` — Para Identificadores
+
+Se usan para encerrar **nombres de objetos** (tablas, columnas, esquemas) cuando:
+- El nombre tiene espacios o caracteres especiales.
+- El nombre es una palabra reservada de SQL.
+- Quieres preservar mayúsculas/minúsculas exactas.
+
+```sql
+-- ✅ Necesarias cuando hay espacios en el nombre
+CREATE TABLE "mi tabla con espacios" (id SERIAL);
+SELECT * FROM "mi tabla con espacios";
+
+-- ✅ Necesarias para nombres con mayúsculas exactas
+CREATE TABLE "ClientesPremium" (id SERIAL);  -- SIN comillas, PostgreSQL lo guarda en minúsculas
+SELECT * FROM "ClientesPremium";             -- Con comillas, busca el nombre exacto
+
+-- ⚠️ Sin comillas dobles, PostgreSQL convierte TODO a minúsculas
+CREATE TABLE MiTabla (id SERIAL);    -- Se guarda como 'mitable'
+SELECT * FROM mitable;               -- ✅ Funciona
+SELECT * FROM MiTabla;               -- ✅ También funciona (convierte a minúsculas)
+SELECT * FROM "MiTabla";             -- ❌ ERROR: "MiTabla" no existe
+```
+
+> 💡 **Mejor práctica:** Usa siempre nombres en **minúsculas con guiones bajos** (`mi_tabla`, `nombre_cliente`) para evitar lidiar con comillas dobles.
+
+### 3. Dollar Quoting `$$texto$$` — Para Cuerpos de Funciones
+
+Se usa principalmente para escribir el cuerpo de **funciones, procedimientos y bloques `DO`**. Evita el infierno de escapar comillas simples dentro del código.
+
+```sql
+-- SIN dollar quoting: hay que escapar cada comilla simple
+CREATE FUNCTION saludo() RETURNS TEXT AS
+'SELECT ''Hola, '' || nombre || ''!'';'
+LANGUAGE SQL;
+-- Muy difícil de leer ↑
+
+-- CON dollar quoting: mucho más legible
+CREATE FUNCTION saludo(p_nombre TEXT) RETURNS TEXT AS $$
+    SELECT 'Hola, ' || p_nombre || '!';
+$$
+LANGUAGE SQL;
+```
+
+**Dollar quoting con etiqueta** (para bloques anidados):
+
+```sql
+-- Cuando el cuerpo interno también usa $$, usas una etiqueta diferente
+CREATE FUNCTION ejemplo() RETURNS VOID AS $outer$
+DECLARE
+    sql TEXT := $inner$SELECT 'hola'$inner$;  -- Block interno usa $inner$
+BEGIN
+    EXECUTE sql;
+END;
+$outer$
+LANGUAGE plpgsql;
+```
+
+### Tabla Resumen de Quoting
+
+| Tipo                    | Sintaxis        | Uso                                                                       | Ejemplo                  |
+| :---------------------- | :-------------- | :------------------------------------------------------------------------ | :----------------------- |
+| Comilla simple          | `'valor'`       | Valores de datos (strings, fechas, números)                               | `WHERE nombre = 'Ana'`   |
+| Comilla simple escapada | `'O''Brien'`    | Comilla simple dentro de un valor                                         | `'it''s a test'`         |
+| Comilla doble           | `"nombre"`      | Identificadores (tablas, columnas) con caracteres especiales o mayúsculas | `"Mi Tabla"`, `"userId"` |
+| Dollar quoting          | `$$...$$`       | Cuerpo de funciones / PL/pgSQL                                            | `AS $$ SELECT 1 $$`      |
+| Dollar con etiqueta     | `$tag$...$tag$` | Bloques anidados                                                          | `$body$ ... $body$`      |
+
+---
+
+## 📇 Índices (Indexes)
+
+Un **índice** es una estructura de datos separada que PostgreSQL mantiene actualizada para acelerar la búsqueda de filas. Es exactamente como el índice al final de un libro — en lugar de leer todo el libro para encontrar "variable", vas al índice y saltas directo a la página.
+
+> **¿Cuándo PostgreSQL usa un índice?**  
+> Automáticamente decide si usar el índice o hacer un Seq Scan (leer toda la tabla). Si la tabla es pequeña, el Seq Scan puede ser más rápido. El índice brilla cuando la consulta filtra una fracción pequeña de las filas.
+
+### Crear y Eliminar Índices
+
+```sql
+-- Índice básico en una columna
+CREATE INDEX idx_pedidos_cliente ON pedidos(cliente_id);
+
+-- Índice único (como UNIQUE constraint pero explícito)
+CREATE UNIQUE INDEX idx_usuarios_email ON usuarios(email);
+
+-- Índice en múltiples columnas (compuesto)
+-- Útil cuando siempre filtras por la combinación de ambas columnas
+CREATE INDEX idx_pedidos_cliente_fecha ON pedidos(cliente_id, creado_en);
+
+-- Índice parcial (solo sobre un subconjunto de filas)
+-- Ahorra espacio cuando solo consultas ciertos registros
+CREATE INDEX idx_pedidos_activos ON pedidos(creado_en)
+WHERE estado = 'pendiente';
+
+-- Crear índice sin bloquear la tabla (recomendado en producción)
+CREATE INDEX CONCURRENTLY idx_pedidos_total ON pedidos(total);
+
+-- Eliminar índice
+DROP INDEX IF EXISTS idx_pedidos_cliente;
+
+-- Ver índices de una tabla
+\d pedidos         -- En psql
+SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'pedidos';
+```
+
+---
+
+### 🌲 BTREE — El Índice por Defecto
+
+**B-Tree** (Árbol B balanceado) es el tipo de índice usado por defecto en PostgreSQL cuando no especificas otro.
+
+**Soporta:**
+- Comparaciones exactas: `=`, `<>`, `!=`
+- Rangos: `<`, `>`, `<=`, `>=`, `BETWEEN`
+- Ordenamiento: `ORDER BY`, `MIN()`, `MAX()`
+- `IS NULL` / `IS NOT NULL`
+
+```sql
+-- Estos índices son BTREE por defecto
+CREATE INDEX idx_precio ON productos(precio);
+CREATE INDEX idx_nombre ON clientes(nombre);
+
+-- Útil para:
+SELECT * FROM productos WHERE precio BETWEEN 10 AND 50;    -- Rango ✅
+SELECT * FROM clientes WHERE nombre = 'Ana';               -- Igualdad ✅
+SELECT * FROM pedidos ORDER BY creado_en DESC LIMIT 10;    -- Ordenamiento ✅
+
+-- Especificarlo explícitamente (equivalente al anterior)
+CREATE INDEX idx_precio ON productos USING BTREE (precio);
+```
+
+---
+
+### #️⃣ HASH — Solo para Igualdad Exacta
+
+El índice **HASH** almacena una función hash de los valores. Es más rápido que BTREE para búsquedas de **igualdad exacta**, pero **no soporta rangos ni ordenamiento**.
+
+```sql
+CREATE INDEX idx_hash_email ON usuarios USING HASH (email);
+
+-- Eficiente SOLO para:
+SELECT * FROM usuarios WHERE email = 'ana@gmail.com';     -- ✅ Igualdad exacta
+
+-- NO funciona (no soporta rangos):
+SELECT * FROM productos WHERE precio > 50;                 -- ❌ No usa HASH
+SELECT * FROM clientes ORDER BY nombre;                    -- ❌ No usa HASH
+```
+
+> ⚠️ En la práctica, BTREE es casi siempre mejor que HASH porque soporta más operaciones con velocidad similar. Usa HASH solo si tienes un caso de uso muy específico de igualdad con valores muy largos.
+
+---
+
+### 🔍 GIN — Para Contenido Compuesto (Arrays, JSONB, Full Text)
+
+**GIN** (Generalized Inverted Index) — Índice invertido generalizado. Ideal para columnas que contienen **múltiples valores** en una sola celda.
+
+**Ideal para:**
+- `JSONB` — buscar dentro de documentos JSON
+- `ARRAY` — buscar elementos dentro de arrays
+- `tsvector` / `tsquery` — búsqueda de texto completo (Full Text Search)
+- `hstore` — tipo clave-valor
+
+```sql
+-- Índice GIN para una columna JSONB
+CREATE INDEX idx_gin_config ON productos USING GIN (config);
+
+-- Permite búsquedas eficientes dentro del JSON:
+SELECT * FROM productos WHERE config @> '{"color": "rojo"}';
+SELECT * FROM productos WHERE config ? 'talla';        -- ¿Tiene la clave 'talla'?
+
+-- Índice GIN para arrays
+CREATE INDEX idx_gin_etiquetas ON articulos USING GIN (etiquetas);
+
+SELECT * FROM articulos WHERE etiquetas @> ARRAY['sql', 'postgres'];
+
+-- Índice GIN para búsqueda de texto completo
+ALTER TABLE articulos ADD COLUMN busqueda_ts tsvector;
+CREATE INDEX idx_gin_fts ON articulos USING GIN (busqueda_ts);
+
+SELECT * FROM articulos
+WHERE busqueda_ts @@ to_tsquery('spanish', 'postgres & indice');
+```
+
+---
+
+### 🗺️ GIST — Para Datos Geométricos y Rangos
+
+**GIST** (Generalized Search Tree) — Árbol de búsqueda generalizado. Soporta tipos de datos complejos como geometrías, rangos y texto aproximado.
+
+**Ideal para:**
+- Tipos geométricos (`POINT`, `POLYGON`, `LINE`) — con extensión PostGIS
+- Tipos de rango (`DATERANGE`, `NUMRANGE`, `TSTZRANGE`)
+- Búsqueda de texto aproximado (`pg_trgm`)
+
+```sql
+-- Índice GIST para rangos de fechas
+CREATE INDEX idx_gist_periodo ON reservas USING GIST (periodo);
+-- donde "periodo" es de tipo DATERANGE
+
+-- Buscar reservas que se solapan con el período requerido
+SELECT * FROM reservas
+WHERE periodo && '[2025-12-20, 2025-12-27)'::DATERANGE;  -- && = se solapan
+
+-- Índice GIST para búsqueda aproximada de texto (con extensión pg_trgm)
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX idx_gist_nombre ON clientes USING GIST (nombre gist_trgm_ops);
+
+-- Búsqueda aproximada (similaridad)
+SELECT nombre FROM clientes WHERE nombre % 'Gonzalez';
+SELECT nombre FROM clientes WHERE nombre ILIKE '%gonzal%';  -- Aprovecha el índice
+```
+
+---
+
+### 📏 BRIN — Para Tablas Enormes con Datos Ordenados
+
+**BRIN** (Block Range INdex) — Índice de rango de bloques. Es el índice más pequeño en tamaño. Funciona guardando el **rango de valores mínimo y máximo** de cada bloque físico del disco.
+
+**Solo funciona bien cuando existe correlación física-lógica:** los datos en disco están naturalmente ordenados por la columna indexada (ej: columnas de fecha donde siempre se insertan datos recientes al final).
+
+```sql
+-- Índice BRIN para una columna de fecha de creación
+-- (Los registros más nuevos siempre se insertan al final → correlación natural)
+CREATE INDEX idx_brin_creado ON logs USING BRIN (creado_en);
+
+-- También útil en tablas de series de tiempo, IoT, eventos de auditoría
+CREATE INDEX idx_brin_timestamp ON sensor_data USING BRIN (recorded_at);
+
+-- Muy eficiente en espacio y para rangos temporales:
+SELECT * FROM logs WHERE creado_en BETWEEN '2025-01-01' AND '2025-03-31';
+```
+
+> **Ventaja:** Un BRIN puede ser 1000x más pequeño que un BTREE equivalente.  
+> **Desventaja:** Solo es útil si los datos están físicamente ordenados por esa columna.
+
+---
+
+### 📊 Resumen Comparativo de Tipos de Índices
+
+| Tipo      | Operaciones Soportadas               | Caso de Uso Ideal                                  |
+| :-------- | :----------------------------------- | :------------------------------------------------- |
+| **BTREE** | `=`, `<`, `>`, `BETWEEN`, `ORDER BY` | **Uso general. El 90% de los casos.**              |
+| **HASH**  | Solo `=`                             | Búsquedas de igualdad exacta en claves muy largas  |
+| **GIN**   | `@>`, `?`, `@@`, `&&`                | JSONB, Arrays, Full Text Search                    |
+| **GIST**  | Solapamiento, contención, distancia  | Geometrías, Rangos, texto aproximado               |
+| **BRIN**  | Rangos en datos correlacionados      | Tablas de logs/eventos enormes (millones de filas) |
+
+### Consejos sobre Índices
+
+```sql
+-- ✅ Ver qué índices están siendo usados y cuántas veces
+SELECT
+    schemaname,
+    tablename,
+    indexname,
+    idx_scan    AS veces_usado,
+    idx_tup_read AS filas_leidas
+FROM pg_stat_user_indexes
+ORDER BY idx_scan DESC;
+
+-- ⚠️ Encontrar índices que NUNCA se usan (candidatos para eliminar)
+SELECT schemaname, tablename, indexname
+FROM pg_stat_user_indexes
+WHERE idx_scan = 0
+  AND schemaname NOT IN ('pg_catalog')
+ORDER BY tablename;
+```
+
+> 🏁 **Reglas de Oro para Índices:**
+> 1. **No indexes everywhere** — Cada índice ralentiza los `INSERT`, `UPDATE` y `DELETE`.
+> 2. **Indexa las columnas de JOIN y WHERE más frecuentes.**
+> 3. **Usa `EXPLAIN ANALYZE` para confirmar que el índice se está usando.**
+> 4. **Usa `CREATE INDEX CONCURRENTLY` en producción** para no bloquear la tabla.
+> 5. **Índices compuestos:** el orden importa. `(a, b)` ayuda en `WHERE a=1`, `WHERE a=1 AND b=2`, pero NO en `WHERE b=2` solo.
