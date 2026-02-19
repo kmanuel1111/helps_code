@@ -23,6 +23,7 @@ La idea es que sea **transferible, autoexplicativa y modular**, con ejemplos cla
 - [🔍 Search Path (Ruta de Búsqueda)](#-que-es-el-search_path)
 - [👮‍♂️ Seguridad: Autenticación (pg_hba.conf)](#-seguridad-autenticación-pg_hba-conf)
 - [🛡️ Seguridad: Políticas de Fila (RLS)](#-seguridad-row-level-security-rls-policies)
+- [🖥️ pgAdmin 4: Interfaz Gráfica](#-pgadmin-4-interfaz-gráfica-para-postgresql)
 
 ---
 
@@ -985,3 +986,237 @@ Para ver qué políticas existen en una tabla:
 \d nominas
 ```
 Al final de la salida verás la sección "Policies".
+
+---
+
+## 🖥️ pgAdmin 4: Interfaz Gráfica para PostgreSQL
+
+### ¿Qué es pgAdmin 4?
+
+Hasta ahora hemos trabajado con **`psql`**, que es la terminal de línea de comandos de PostgreSQL.  
+**pgAdmin 4** es la herramienta gráfica oficial y gratuita para administrar PostgreSQL.
+
+Piénsalo así:
+- `psql` es como conducir un automóvil con palanca — potente y preciso, pero requiere práctica.
+- `pgAdmin 4` es como conducir un automóvil automático — más visual e intuitivo para el día a día.
+
+> **¿Cuándo usar cada uno?**  
+> Usa `psql` para automatizaciones, scripts y cuando estés en un servidor remoto sin interfaz gráfica.  
+> Usa `pgAdmin 4` cuando quieras explorar datos visualmente, crear objetos con asistentes, o simplemente prefieras ver todo en pantalla.
+
+---
+
+### 💿 Instalación de pgAdmin 4
+
+pgAdmin 4 puede instalarse de tres maneras según tu sistema operativo:
+
+#### 🐧 En Linux (Debian/Ubuntu)
+
+```bash
+# 1. Instalar el repositorio de pgAdmin
+curl -fsS https://www.pgadmin.org/static/packages_pgadmin_org.pub | sudo gpg --dearmor -o /usr/share/keyrings/packages-pgadmin-org.gpg
+
+sudo sh -c 'echo "deb [signed-by=/usr/share/keyrings/packages-pgadmin-org.gpg] https://ftp.postgresql.org/pub/pgadmin/pgadmin4/apt/$(lsb_release -cs) pgadmin4 main" > /etc/apt/sources.list.d/pgadmin4.list'
+
+# 2. Actualizar e instalar
+sudo apt update
+
+# Instalar versión de escritorio (GUI local)
+sudo apt install pgadmin4-desktop
+
+# O instalar versión web (se accede desde el navegador)
+sudo apt install pgadmin4-web
+
+# Si instalas la versión web, configúrala con:
+sudo /usr/pgadmin4/bin/setup-web.sh
+```
+
+> ℹ️ **¿Cuál elegir?**  
+> - `pgadmin4-desktop`: Se abre como una aplicación normal de escritorio.  
+> - `pgadmin4-web`: Se accede desde tu navegador en `http://localhost/pgadmin4`. Útil en servidores.
+
+#### 🪟 En Windows
+
+1. Ve a la página oficial: [https://www.pgadmin.org/download/pgadmin-4-windows/](https://www.pgadmin.org/download/pgadmin-4-windows/)
+2. Descarga el instalador `.exe` de la última versión.
+3. Ejecútalo y sigue el asistente (Siguiente → Siguiente → Instalar).
+4. Al finalizar, pgAdmin 4 aparecerá en tu menú de inicio.
+
+> **Nota:** Si instalaste PostgreSQL desde el instalador oficial de [postgresql.org](https://www.postgresql.org/download/windows/), pgAdmin 4 probablemente ya vino incluido y ya está instalado en tu máquina.
+
+#### 🍎 En macOS
+
+1. Ve a: [https://www.pgadmin.org/download/pgadmin-4-macos/](https://www.pgadmin.org/download/pgadmin-4-macos/)
+2. Descarga el archivo `.dmg`.
+3. Arrástralo a tu carpeta de **Aplicaciones**.
+
+---
+
+### 🔌 Primera Conexión a un Servidor PostgreSQL
+
+Una vez que abres pgAdmin 4 por primera vez, verás un panel en blanco. Debes **registrar un servidor** (es decir, decirle a pgAdmin a qué instancia de PostgreSQL debe conectarse).
+
+#### Paso a Paso
+
+**Paso 1:** En el panel izquierdo ("Browser"), haz clic derecho en **"Servers"** → **"Register"** → **"Server..."**
+
+```
+Panel izquierdo  →  Servers  →  (clic derecho)  →  Register  →  Server...
+```
+
+**Paso 2:** Se abre una ventana con dos pestañas principales. Completa la pestaña **"General"**:
+
+| Campo    | Valor de ejemplo      | Descripción                                                    |
+| :------- | :-------------------- | :------------------------------------------------------------- |
+| **Name** | `Mi PostgreSQL Local` | Un alias que TÚ le pones (solo para identificarlo en pgAdmin). |
+
+**Paso 3:** Ve a la pestaña **"Connection"** y completa los datos de conexión:
+
+| Campo                    | Valor típico              | Descripción                                                                               |
+| :----------------------- | :------------------------ | :---------------------------------------------------------------------------------------- |
+| **Host name/address**    | `localhost` o `127.0.0.1` | IP del servidor. Si está en tu misma máquina, es `localhost`.                             |
+| **Port**                 | `5432`                    | Puerto por defecto de PostgreSQL.                                                         |
+| **Maintenance database** | `postgres`                | La base de datos a la que pgAdmin se conecta inicialmente (la `postgres` siempre existe). |
+| **Username**             | `kzambrano`               | Tu usuario de PostgreSQL.                                                                 |
+| **Password**             | `tu_contraseña`           | La contraseña del usuario.                                                                |
+
+**Paso 4:** Opcionalmente, activa **"Save password"** para no tener que escribirla cada vez.
+
+**Paso 5:** Haz clic en **"Save"**. Si los datos son correctos, verás el servidor aparecer en el árbol de la izquierda con un ícono de toma de corriente ✅.
+
+> 🔴 **Error común:** Si ves `Connection refused` o `could not connect to server`, verifica:
+> 1. Que el servicio de PostgreSQL esté corriendo: `sudo systemctl status postgresql`
+> 2. Que el host y puerto sean correctos.
+> 3. Que el usuario y contraseña sean válidos.
+
+---
+
+### 🗺️ Navegando pgAdmin 4: La Interfaz Explicada
+
+```
+📁 Servers
+ └── 📡 Mi PostgreSQL Local
+      └── 🗄️ Databases
+           └── 📦 mi_tienda        ← aquí están tus datos
+                ├── 📏 Schemas
+                │    └── 🧩 public
+                │         ├── 📊 Tables      ← tus tablas
+                │         ├── 👁️ Views
+                │         └── 🔢 Sequences
+                ├── 🏛️ Extensions
+                └── ⚙️ Functions
+```
+
+- **Para ver tablas:** Expande `Databases` → tu_base_de_datos → `Schemas` → `public` → `Tables`.
+- **Para ver columnas de una tabla:** Haz clic en la tabla → verás su estructura en el panel derecho.
+
+---
+
+### 🛠️ Tips Más Útiles del Día a Día
+
+#### 1. 📝 Query Tool: Tu consola SQL visual
+
+El **Query Tool** es el equivalente visual al `psql`. Aquí escribes y ejecutas tus consultas SQL.
+
+**Cómo abrirlo:**
+- Haz clic derecho sobre una base de datos → **"Query Tool"**
+- O usa el menú superior: `Tools` → `Query Tool`
+
+**Atajos de teclado clave dentro del Query Tool:**
+
+| Atajo          | Acción                                            |
+| :------------- | :------------------------------------------------ |
+| `F5`           | Ejecutar la consulta completa                     |
+| `Shift + F5`   | Ejecutar SOLO la consulta donde está el cursor    |
+| `Ctrl + /`     | Comentar/descomentar la línea seleccionada        |
+| `Ctrl + Space` | Autocompletar (nombres de tablas, columnas, etc.) |
+| `Ctrl + S`     | Guardar el script `.sql` en un archivo            |
+
+> 💡 **Tip:** Si seleccionas solo una parte del SQL y presionas `F5`, ejecutará únicamente lo seleccionado. Muy útil para probar partes de una consulta larga.
+
+#### 2. 📊 Ver el contenido de una tabla rápidamente
+
+No necesitas escribir `SELECT * FROM tabla`. Puedes hacerlo visualmente:
+
+1. En el árbol izquierdo, haz clic derecho en cualquier tabla.
+2. Selecciona **"View/Edit Data"** → **"All Rows"**.
+3. Se abrirá el Query Tool con los datos ya cargados.
+
+#### 3. 📤 Exportar datos a CSV o Excel
+
+¿Necesitas compartir datos con alguien que no usa PostgreSQL? pgAdmin permite exportar resultados fácilmente.
+
+1. Ejecuta tu consulta en el Query Tool.
+2. En la barra de resultados, haz clic en el ícono de **descarga** (o el botón **"Download as CSV"**).
+3. Se genera un archivo `.csv` que puedes abrir en Excel o Google Sheets.
+
+#### 4. 🔎 Inspeccionar la estructura de una tabla (DDL)
+
+¿Quieres ver cómo fue creada una tabla? pgAdmin puede mostrarte el SQL exacto.
+
+1. Haz clic derecho en la tabla.
+2. Selecciona **"Properties..."** para ver columnas, tipos de datos, restricciones, índices, etc.
+3. O selecciona **"Scripts"** → **"CREATE Script"** para ver el `CREATE TABLE` completo.
+
+#### 5. 🔒 Verificar permisos de un usuario fácilmente
+
+En el Query Tool, puedes ejecutar:
+```sql
+-- Ver todos los permisos sobre las tablas del esquema public
+SELECT grantee, table_name, privilege_type
+FROM information_schema.role_table_grants
+WHERE table_schema = 'public'
+ORDER BY grantee, table_name;
+```
+
+#### 6. 📈 Ver el tamaño de tablas y búsqueda de tablas pesadas
+
+```sql
+-- Ver las tablas más grandes de la base de datos actual
+SELECT
+    schemaname AS esquema,
+    tablename AS tabla,
+    pg_size_pretty(pg_total_relation_size(schemaname || '.' || tablename)) AS tamaño_total,
+    pg_size_pretty(pg_relation_size(schemaname || '.' || tablename)) AS tamaño_datos,
+    pg_size_pretty(pg_indexes_size(schemaname || '.' || tablename)) AS tamaño_indices
+FROM pg_tables
+WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY pg_total_relation_size(schemaname || '.' || tablename) DESC
+LIMIT 20;
+```
+
+#### 7. 🐢 Identificar consultas lentas en tiempo real
+
+```sql
+-- Ver las consultas que están corriendo ahora mismo
+SELECT
+    pid,
+    now() - pg_stat_activity.query_start AS duracion,
+    query,
+    state
+FROM pg_stat_activity
+WHERE state = 'active'
+  AND query_start < now() - interval '5 seconds'
+ORDER BY duracion DESC;
+```
+
+> 💡 Si ves una consulta con mucho tiempo, puedes terminarla con:
+> ```sql
+> SELECT pg_terminate_backend(pid);  -- Reemplaza pid con el número real
+> ```
+
+---
+
+### ✅ Resumen: Qué Puedes Hacer con pgAdmin 4
+
+| Tarea                   | Cómo                                         |
+| :---------------------- | :------------------------------------------- |
+| Ejecutar SQL            | Query Tool (`F5`)                            |
+| Ver tablas y columnas   | Árbol izquierdo → Tables                     |
+| Ver datos de una tabla  | Clic derecho en tabla → View/Edit Data       |
+| Exportar datos a CSV    | Query Tool → botón descarga                  |
+| Ver el DDL de un objeto | Clic derecho → Scripts → CREATE Script       |
+| Crear una base de datos | Clic derecho en Databases → Create           |
+| Crear un usuario        | Clic derecho en Login/Group Roles → Create   |
+| Hacer un backup         | Clic derecho en la base de datos → Backup... |
+| Ver roles y permisos    | Object → Properties → Security               |
