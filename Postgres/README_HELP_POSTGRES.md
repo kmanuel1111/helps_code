@@ -41,6 +41,13 @@ La idea es que sea **transferible, autoexplicativa y modular**, con ejemplos cla
   - [🔬 Plan de Ejecución (EXPLAIN)](#-plan-de-ejecución-explain--explain-analyze)
   - [🔤 Quoting en PostgreSQL](#-quoting-en-postgresql)
   - [📇 Índices (Indexes)](#-índices-indexes)
+- [🔧 Mantenimiento de PostgreSQL](#-mantenimiento-de-postgresql)
+  - [📊 Actualización de Estadísticas (ANALYZE)](#-actualización-de-estadísticas-analyze)
+  - [🧹 Fragmentación y Bloat (VACUUM)](#-fragmentación-y-bloat-vacuum)
+    - [VACUUM Normal vs VACUUM FULL](#vacuum-normal-vs-vacuum-full)
+    - [AUTOVACUUM](#autovacuum)
+    - [VACUUM FREEZE](#vacuum-freeze)
+  - [🔁 Reconstrucción de Índices (REINDEX)](#-reconstrucción-de-índices-reindex)
 
 ---
 
@@ -3042,3 +3049,536 @@ ORDER BY tablename;
 > 3. **Usa `EXPLAIN ANALYZE` para confirmar que el índice se está usando.**
 > 4. **Usa `CREATE INDEX CONCURRENTLY` en producción** para no bloquear la tabla.
 > 5. **Índices compuestos:** el orden importa. `(a, b)` ayuda en `WHERE a=1`, `WHERE a=1 AND b=2`, pero NO en `WHERE b=2` solo.
+
+---
+
+# 🔧 Mantenimiento de PostgreSQL
+
+PostgreSQL es muy eficiente, pero como cualquier motor de base de datos, **necesita mantenimiento periódico** para rendir al máximo. Esta sección cubre las tres tareas de mantenimiento más importantes:
+
+1. **ANALYZE** — Mantener las estadísticas actualizadas para que el planificador elija los mejores planes de consulta.
+2. **VACUUM** — Recuperar espacio de filas eliminadas/actualizadas y evitar problemas de rendimiento.
+3. **REINDEX** — Reconstruir índices dañados o muy fragmentados.
+
+> 💡 **Analogía General:** Imagina que tu base de datos es una biblioteca. Los libros (datos) se mueven, se añaden y se eliminan constantemente. El **bibliotecario** necesita de vez en cuando:
+> - Actualizar el **catálogo** con la ubicación actual de los libros (→ `ANALYZE`)
+> - Limpiar los **estantes vacíos** donde había libros retirados para dejar espacio a nuevos (→ `VACUUM`)
+> - Reorganizar el **fichero de índices** si está desordenado o dañado (→ `REINDEX`)
+
+---
+
+## 📊 Actualización de Estadísticas (ANALYZE)
+
+### 🤔 El problema: el planificador de consultas necesita información fresca
+
+Cuando ejecutas una consulta (`SELECT`, `UPDATE`, `DELETE`), PostgreSQL no la ejecuta a ciegas. Primero la analiza y construye un **plan de ejecución**: decide si usar un índice o leer la tabla completa, en qué orden hacer los joins, etc.
+
+Para tomar esa decisión, el planificador depende de **estadísticas** sobre los datos de cada tabla:
+- ¿Cuántas filas tiene la tabla?
+- ¿En la columna `pais`, cuántos valores distintos hay?
+- ¿Cuál es la distribución de valores en `precio`? ¿Hay muchos precios bajos o una distribución uniforme?
+
+Estas estadísticas se guardan en la tabla del sistema `pg_statistic` y se consultan a través de la vista `pg_stats`.
+
+> ⚠️ **El problema:** Si tu tabla tiene 1,000 filas y de repente insertas 5 millones, el planificador sigue creyendo que tiene 1,000. Puede tomar decisiones de plan desastrosas (ej.: hacer un Seq Scan cuando un índice sería 1000x más rápido). Eso se llama **plan desactualizado**.
+
+### 🛠️ El comando ANALYZE
+
+`ANALYZE` recorre una **muestra representativa** de la tabla (por defecto el 30% de los bloques de datos), calcula las estadísticas y las guarda. **No modifica ni elimina datos**, solo actualiza las estadísticas.
+
+```sql
+-- Analizar TODAS las tablas de la base de datos actual
+ANALYZE;
+
+-- Analizar una tabla específica (más rápido cuando solo cambiamos una tabla)
+ANALYZE ventas;
+
+-- Analizar una tabla en un esquema específico
+ANALYZE esquema_ventas.transacciones;
+
+-- Analizar columnas específicas de una tabla
+-- Útil cuando solo algunas columnas cambian mucho
+ANALYZE ventas (cliente_id, monto_total);
+
+-- ANALYZE con salida detallada
+-- (VERBOSE muestra cada tabla que analiza y cuántas filas muestreó)
+ANALYZE VERBOSE ventas;
+```
+
+**Resultado de `ANALYZE VERBOSE`:**
+```
+INFO:  analyzing "public.ventas"
+INFO:  "ventas": scanned 12000 of 40000 pages, containing 2400000 live rows and
+       18340 dead rows; 30000 rows in sample, 8000000 estimated total rows
+ANALYZE
+```
+
+> 💡 Este output te dice cuántas **filas muertas (dead rows)** detectó (más adelante veremos qué son en la sección VACUUM).
+
+### 📊 Ver las estadísticas actuales
+
+```sql
+-- Ver estadísticas de las columnas de una tabla
+-- Útil para diagnosticar si el planificador tiene información correcta
+SELECT
+    tablename,
+    attname          AS columna,
+    n_distinct,       -- Estimado de valores únicos (-1 = todos únicos, -0.5 = ~50% únicos)
+    correlation,      -- Qué tan correlacionado está el orden físico con el lógico (1=perfecto, 0=caótico)
+    most_common_vals AS valores_frecuentes,
+    most_common_freqs AS frecuencias
+FROM pg_stats
+WHERE tablename = 'ventas'
+ORDER BY attname;
+
+-- Ver cuándo fue el último ANALYZE en cada tabla
+SELECT
+    relname          AS tabla,
+    last_analyze,     -- Última vez que se ejecutó ANALYZE manualmente
+    last_autoanalyze  -- Última vez que se ejecutó por autovacuum
+FROM pg_stat_user_tables
+ORDER BY last_analyze ASC NULLS FIRST;  -- Las tablas más desactualizadas primero
+```
+
+### ⚙️ El parámetro de precisión: `default_statistics_target`
+
+Por defecto, PostgreSQL recopila estadísticas para hasta **100 valores frecuentes** por columna (`default_statistics_target = 100`). Puedes aumentar esto en columnas donde el planificador toma malas decisiones:
+
+```sql
+-- Ver el valor actual del parámetro global
+SHOW default_statistics_target;
+-- Resultado típico: 100
+
+-- Aumentar la muestra estadística SOLO para una columna específica
+-- (No afecta el resto de la tabla)
+ALTER TABLE ventas ALTER COLUMN tipo_pago SET STATISTICS 500;
+
+-- Después de cambiar el target, necesitas re-analizar
+ANALYZE ventas (tipo_pago);
+
+-- Restaurar al valor por defecto de la columna
+ALTER TABLE ventas ALTER COLUMN tipo_pago SET STATISTICS DEFAULT;
+```
+
+> ⚠️ Aumentar `STATISTICS` hace que `ANALYZE` sea más lento y que el planificador use más memoria, pero toma mejores decisiones en columnas con distribuciones complejas de datos.
+
+### 📋 Resumen: cuándo ejecutar ANALYZE manualmente
+
+| Situación                                                       | Acción recomendada                                     |
+| :-------------------------------------------------------------- | :----------------------------------------------------- |
+| Cargaste millones de filas con `COPY` o `INSERT` masivo         | `ANALYZE tabla;` inmediatamente después                |
+| Después de un `DELETE` que borró mucho porcentaje de los datos  | `ANALYZE tabla;`                                       |
+| Las consultas sobre una tabla empezaron a ser lentas de repente | `ANALYZE tabla;` y luego revisar con `EXPLAIN ANALYZE` |
+| Migraste datos a una tabla nueva                                | `ANALYZE` antes de abrir a producción                  |
+| Mantenimiento normal (pocos cambios)                            | El **autovacuum** lo hace automáticamente              |
+
+---
+
+## 🧹 Fragmentación y Bloat (VACUUM)
+
+### 🤔 ¿Qué es el bloat y por qué ocurre?
+
+Esta es una de las características más importantes (y más malentendidas) de PostgreSQL. Para entenderla, hay que saber cómo PostgreSQL implementa las actualizaciones.
+
+**Cómo funcionan los `UPDATE` y `DELETE` en PostgreSQL:**
+
+PostgreSQL usa un sistema llamado **MVCC** (Multi-Version Concurrency Control — Control de Concurrencia Multi-Versión). La idea clave es:
+
+- **Cuando haces un `DELETE`**, la fila **no se borra físicamente**. Solo se marca como "eliminada" (invisible para nuevas transacciones, pero el espacio en disco sigue ocupado).
+- **Cuando haces un `UPDATE`**, PostgreSQL en realidad hace un **DELETE + INSERT**: marca la versión vieja como eliminada e inserta una versión nueva. Dos registros en disco por cada actualización.
+
+> 💡 **Analogía:** Imagina una pizarra donde escribes notas. Cuando cambias una nota, no la borras — tacharás la vieja con un marcador y escribes la nueva versión al lado. Con el tiempo, la pizarra se llena de notas tachadas. Esas notas tachadas son las **"dead tuples" (filas muertas)** en PostgreSQL.
+
+**¿Por qué no borra directamente?** Para que otras transacciones que empezaron antes del `DELETE/UPDATE` sigan viendo la versión vieja de los datos durante su ejecución, garantizando consistencia. Es la magia del MVCC.
+
+**El problema:** Si no se limpia, la tabla crece indefinidamente con filas muertas. Esto se llama **bloat (hinchazón)**:
+- El disco se llena innecesariamente.
+- Las consultas son más lentas porque PostgreSQL lee más datos de disco.
+- Los índices también tienen bloat y se vuelven más lentos.
+
+### 📊 ¿Cómo detectar bloat en una tabla?
+
+```sql
+-- Ver filas vivas vs. filas muertas en tus tablas
+-- (n_dead_tup: cuántas filas muertas hay acumuladas)
+SELECT
+    relname         AS tabla,
+    n_live_tup      AS filas_vivas,
+    n_dead_tup      AS filas_muertas,
+    last_vacuum,
+    last_autovacuum,
+    CASE
+        WHEN n_live_tup > 0
+        THEN round(100.0 * n_dead_tup / (n_live_tup + n_dead_tup), 2)
+        ELSE 0
+    END AS porcentaje_bloat
+FROM pg_stat_user_tables
+WHERE n_dead_tup > 0
+ORDER BY n_dead_tup DESC;
+```
+
+---
+
+### VACUUM Normal vs VACUUM FULL
+
+PostgreSQL ofrece dos formas de ejecutar VACUUM, con comportamientos muy diferentes:
+
+#### 🧹 VACUUM (Normal)
+
+**¿Qué hace?**
+- Recorre la tabla y **marca el espacio de las filas muertas como reutilizable**.
+- El espacio no se devuelve al sistema operativo (el archivo del disco no se encoge), pero PostgreSQL puede reusar esas páginas para nuevas filas.
+- Es una operación **no bloqueante**: se ejecuta en paralelo con tu trabajo normal. Los `SELECT`, `INSERT`, `UPDATE` pueden continuar mientras VACUUM trabaja.
+
+> **Analogía:** Es como barrer el polvo debajo del escritorio hacia un rincón para tener espacio libre, pero sin vaciar el cuarto. El cuarto (archivo de disco) sigue igual de grande, pero ahora hay espacio usable.
+
+```sql
+-- VACUUM básico en una tabla
+VACUUM ventas;
+
+-- VACUUM en todas las tablas de la base de datos actual
+VACUUM;
+
+-- VACUUM + ANALYZE = Lo más común. Limpia Y actualiza estadísticas
+-- Es la combinación recomendada para mantenimiento manual
+VACUUM ANALYZE ventas;
+
+-- Ver progreso del VACUUM en tiempo real (PostgreSQL 13+)
+-- Útil para tablas muy grandes
+SELECT
+    pid,
+    phase,
+    heap_blks_total,
+    heap_blks_scanned,
+    heap_blks_vacuumed,
+    index_vacuum_count
+FROM pg_stat_progress_vacuum;
+```
+
+#### 🧹💪 VACUUM FULL
+
+**¿Qué hace?**
+- Crea una **copia completamente nueva** de la tabla con solo las filas vivas, y luego reemplaza la tabla original.
+- Sí **devuelve el espacio al sistema operativo** (el archivo shrinkea).
+- **⚠️ BLOQUEA LA TABLA COMPLETAMENTE** durante todo el proceso. Nadie puede leer ni escribir en la tabla mientras se ejecuta.
+- Puede tardar mucho tiempo en tablas grandes.
+
+> **Analogía:** Es como vaciar completamente el cuarto, tirando todo lo que está tachado, y amueblarlo de nuevo solo con lo que sirve. Al terminar, el cuarto es más pequeño y perfectamente organizado, ¡pero mientras estás haciendo esto nadie puede entrar!
+
+```sql
+-- VACUUM FULL en una tabla (¡BLOQUEA LA TABLA!)
+-- Usar solo en ventanas de mantenimiento, cuando no hay tráfico
+VACUUM FULL ventas;
+
+-- VACUUM FULL + ANALYZE (limpia, recupera espacio, actualiza estadísticas)
+VACUUM FULL ANALYZE ventas;
+```
+
+> ⚠️ **Advertencia importante:** `VACUUM FULL` necesita espacio adicional en disco mientras trabaja (la copia nueva + la vieja existen al mismo tiempo). Asegúrate de tener al menos el doble del espacio de la tabla disponible.
+
+#### 📊 VACUUM Normal vs FULL: ¿Cuándo usar cada uno?
+
+| Característica                   | `VACUUM` (Normal)                      | `VACUUM FULL`                                                    |
+| :------------------------------- | :------------------------------------- | :--------------------------------------------------------------- |
+| **Bloqueo**                      | ❌ No bloquea (no-bloqueante)           | ✅ Bloquea completamente la tabla                                 |
+| **Devuelve espacio al SO**       | ❌ No (solo lo marca como reutilizable) | ✅ Sí (el archivo encoge)                                         |
+| **Velocidad**                    | Rápido                                 | Lento (reescribe toda la tabla)                                  |
+| **Espacio extra necesario**      | Mínimo                                 | ≈ El tamaño de la tabla                                          |
+| **Uso recomendado**              | Mantenimiento diario / automático      | Solo cuando el bloat es severo y tienes ventana de mantenimiento |
+| **Ejecuta en producción activa** | ✅ Sí                                   | ⛔ Evitar (bloquea a usuarios)                                    |
+
+> 💡 **Regla práctica:** Confía en el `autovacuum` para el día a día. Solo usa `VACUUM FULL` cuando el bloat ya causó problemas de espacio en disco y puedes permitirte una ventana de mantenimiento.
+
+---
+
+### AUTOVACUUM
+
+#### 🤔 ¿Qué es?
+
+El **autovacuum** es un proceso de fondo de PostgreSQL que ejecuta `VACUUM` y `ANALYZE` automáticamente en las tablas cuando detecta que lo necesitan. Sin él, tendrías que ejecutar VACUUM manualmente en cada tabla todo el tiempo.
+
+> **Analogía:** Es como tener un **conserje automático** en tu biblioteca que, cuando detecta que un estante tiene muchas notas tachadas, lo limpia por la noche sin que tengas que pedírselo.
+
+#### ⚙️ Parámetros clave del autovacuum
+
+Puedes ver la configuración actual con `SHOW`:
+
+```sql
+-- Estado del autovacuum
+SHOW autovacuum;                      -- ¿Está habilitado? (on/off)
+SHOW autovacuum_max_workers;          -- ¿Cuántos procesos en paralelo?
+SHOW autovacuum_naptime;              -- ¿Con qué frecuencia revisa las tablas?
+```
+
+```sql
+-- Umbrales para disparar VACUUM automático
+-- Se ejecuta VACUUM cuando:
+-- n_dead_tup > autovacuum_vacuum_threshold + (autovacuum_vacuum_scale_factor * n_live_tup)
+SHOW autovacuum_vacuum_threshold;     -- Umbral mínimo absoluto de dead tuples (default: 50)
+SHOW autovacuum_vacuum_scale_factor;  -- % de la tabla que debe tener dead tuples (default: 0.2 = 20%)
+
+-- Se ejecuta ANALYZE cuando:
+-- n_mod_since_analyze > autovacuum_analyze_threshold + (autovacuum_analyze_scale_factor * n_live_tup)
+SHOW autovacuum_analyze_threshold;    -- Umbral mínimo de filas modificadas (default: 50)
+SHOW autovacuum_analyze_scale_factor; -- % de filas modificadas para disparar ANALYZE (default: 0.1 = 10%)
+```
+
+```sql
+-- Control de agresividad (para no sobrecargar el servidor)
+SHOW autovacuum_vacuum_cost_delay;    -- Pausa entre operaciones de I/O (ms). Más alto = más lento pero menos impacto.
+SHOW autovacuum_vacuum_cost_limit;    -- Cuánto trabajo hace antes de pausar. Más bajo = más gentil con el disco.
+```
+
+#### 📋 Tabla de parámetros autovacuum (con valores por defecto)
+
+| Parámetro                         | Default | Descripción                                           |
+| :-------------------------------- | :------ | :---------------------------------------------------- |
+| `autovacuum`                      | `on`    | Habilitar/deshabilitar autovacuum                     |
+| `autovacuum_max_workers`          | `3`     | Número máximo de procesos autovacuum en paralelo      |
+| `autovacuum_naptime`              | `1min`  | Tiempo de espera entre ciclos de revisión de tablas   |
+| `autovacuum_vacuum_threshold`     | `50`    | Dead tuples mínimas antes de considerar un VACUUM     |
+| `autovacuum_vacuum_scale_factor`  | `0.2`   | % de la tabla en dead tuples para disparar VACUUM     |
+| `autovacuum_analyze_threshold`    | `50`    | Filas modificadas mínimas antes de considerar ANALYZE |
+| `autovacuum_analyze_scale_factor` | `0.1`   | % de la tabla modificada para disparar ANALYZE        |
+| `autovacuum_vacuum_cost_delay`    | `2ms`   | Pausa entre operaciones (throttling)                  |
+| `autovacuum_vacuum_cost_limit`    | `200`   | Límite de costo antes de pausar                       |
+
+#### ⚠️ Tablas grandes: problema con los valores por defecto
+
+Los factores de escala (`scale_factor`) son un **porcentaje de la tabla**. En tablas enormes esto es un problema:
+
+- Una tabla con **50 millones de filas** necesita **10 millones de dead tuples** (20%) para que el autovacuum se active con `autovacuum_vacuum_scale_factor=0.2`.
+- Eso es demasiado bloat antes de que se limpie.
+
+**Solución:** Configurar el autovacuum a nivel de tabla individual:
+
+```sql
+-- Para tablas muy grandes con alta rotación de datos,
+-- reducir el scale_factor para que el autovacuum actúe más seguido
+ALTER TABLE transacciones SET (
+    autovacuum_vacuum_scale_factor = 0.01,   -- Actúa al 1% de dead tuples en vez del 20%
+    autovacuum_analyze_scale_factor = 0.005  -- ANALYZE al 0.5% de modificaciones
+);
+
+-- Para tablas "append-only" (solo se insertan registros, nunca se borran/actualizan)
+-- ej. tablas de logs, puede desactivarse el vacuum ya que no hay dead tuples
+ALTER TABLE logs_eventos SET (
+    autovacuum_enabled = false
+);
+```
+
+#### 🔍 Monitorear el autovacuum
+
+```sql
+-- Ver qué está haciendo autovacuum en este momento
+SELECT
+    pid,
+    datname     AS base_datos,
+    relid::regclass AS tabla,
+    phase,
+    heap_blks_scanned,
+    heap_blks_vacuumed
+FROM pg_stat_progress_vacuum
+JOIN pg_database ON datid = pg_database.oid;
+
+-- Tablas que más se vacuuman automáticamente
+SELECT
+    relname          AS tabla,
+    n_dead_tup       AS filas_muertas,
+    last_autovacuum,
+    last_autoanalyze,
+    autovacuum_count,
+    autoanalyze_count
+FROM pg_stat_user_tables
+ORDER BY autovacuum_count DESC
+LIMIT 15;
+```
+
+---
+
+### VACUUM FREEZE
+
+#### 🤔 ¿Por qué existe? El problema del Transaction ID Wraparound
+
+Este es un concepto avanzado pero crítico para entender. PostgreSQL usa un número llamado **Transaction ID (XID)** para cada transacción. Es como un número de factura: cada operación recibe el siguiente número disponible.
+
+El problema: estos números tienen **límite de 2,000 millones** (2^31). Cuando se acerca a ese límite, PostgreSQL entra en modo de precaución extrema y empieza a avisar con mensajes de advertencia. Si llega al límite sin intervención, **PostgreSQL rechaza nuevas transacciones** para proteger la integridad de los datos. Es un momento crítico.
+
+`VACUUM FREEZE` resuelve esto: **congela las filas viejas** marcándolas con un flag especial (`frozen`) que las exime de la comparación de XID. Una fila congelada es permanentemente visible para todas las transacciones futuras.
+
+> **Analogía:** Es como convertir una nota en la pizarra de "pendiente de revisión" a "archivada permanentemente". Ya no necesita número de transacción porque se garantiza que es válida para siempre.
+
+#### ⚙️ Cómo funciona: el parámetro `vacuum_freeze_min_age`
+
+```sql
+-- Filas con XID más viejo que este valor serán consideradas para freeze
+SHOW vacuum_freeze_min_age;
+-- Default: 50000000 (50 millones de transacciones de antigüedad)
+
+-- Umbral más agresivo para el freeze (age límite antes de forzar el freeze)
+SHOW vacuum_freeze_table_age;
+-- Default: 150000000 (150 millones). Cuando la tabla supera esta antigüedad,
+-- VACUUM recorre TODA la tabla buscando filas para congelar.
+
+-- Umbral de emergencia (age límite para el autovacuum de emergencia)
+SHOW autovacuum_freeze_max_age;
+-- Default: 200000000 (200 millones). El autovacuum FORZARÁ un VACUUM
+-- en tablas que estén a este límite del wraparound.
+```
+
+#### 🛠️ Ejecutar VACUUM FREEZE
+
+```sql
+-- Ejecutar FREEZE en una tabla específica
+VACUUM FREEZE ventas;
+
+-- FREEZE + VERBOSE para ver el detalle
+VACUUM FREEZE VERBOSE ventas;
+
+-- En toda la base de datos (útil después de una migración masiva)
+VACUUM FREEZE;
+```
+
+**Output de `VACUUM FREEZE VERBOSE`:**
+```
+INFO:  vacuuming "public.ventas"
+INFO:  scanned index "idx_ventas_cliente" to remove 0 row versions
+INFO:  "ventas": found 0 removable, 5000000 nonremovable row versions in 22000 pages
+DETAIL:  0 dead row versions cannot be removed yet, oldest xmin: 7654321
+         All of 5000000 heap pages containing 5000000 live rows were frozen.
+INFO:  vacuuming "pg_toast.pg_toast_16420"
+VACUUM
+```
+
+#### 🔍 Monitorear el riesgo de wraparound
+
+```sql
+-- Ver la "age" (antigüedad en transacciones) de cada tabla
+-- Mientras más alto el valor, más urgente hacer FREEZE
+SELECT
+    relname                                      AS tabla,
+    age(relfrozenxid)                            AS age_xid,
+    2000000000 - age(relfrozenxid)               AS margen_restante,
+    round(100.0 * age(relfrozenxid) / 2000000000, 2) AS porcentaje_riesgo
+FROM pg_class
+WHERE relkind = 'r'
+  AND relnamespace NOT IN (
+      SELECT oid FROM pg_namespace WHERE nspname LIKE 'pg_%' OR nspname = 'information_schema'
+  )
+ORDER BY age(relfrozenxid) DESC
+LIMIT 10;
+```
+
+> 🚨 **Alerta:** Si `age_xid` supera **1,500,000,000** en alguna tabla, PostgreSQL comenzará a mostrar advertencias en el log. Si supera **2,000,000,000**, el servidor entrará en modo de solo lectura. Es una situación de emergencia que requiere `VACUUM FREEZE` inmediato.
+
+---
+
+## 🔁 Reconstrucción de Índices (REINDEX)
+
+### 🤔 ¿Qué es y por qué es diferente a crear un índice nuevo?
+
+Recordemos que los **índices** son estructuras separadas que PostgreSQL mantiene para acelerar las búsquedas. También sufren de **bloat** (por las actualizaciones y eliminaciones de datos), y en casos raros pueden **corromperse** (por caídas de luz, bugs, etc.).
+
+`REINDEX` **reconstruye completamente un índice** desde cero usando los datos actuales de la tabla. Es como tirar el fichero de índices desordenado y crear uno nuevo perfectamente organizado.
+
+**¿Por qué no simplemente hacer `DROP INDEX` + `CREATE INDEX`?**
+
+| Aspecto                      | `DROP INDEX` + `CREATE INDEX`                             | `REINDEX`                                               |
+| :--------------------------- | :-------------------------------------------------------- | :------------------------------------------------------ |
+| **Tiempo sin índice**        | El índice no existe mientras se recrea (consultas lentas) | El índice viejo sigue activo*                           |
+| **Bloqueo**                  | `CREATE INDEX` puede hacerse `CONCURRENTLY`               | `REINDEX CONCURRENTLY` disponible desde PG12            |
+| **Conveniencia**             | Necesitas saber el DDL exacto del índice                  | `REINDEX` lo hace automáticamente                       |
+| **Índice de clave primaria** | Requiere desarmar constraints (complejo)                  | `REINDEX` lo maneja directamente                        |
+| **Índice corrupto**          | Puede fallar si el índice está corrupto                   | `REINDEX` parte de los datos de la tabla, no del índice |
+
+> *Con `REINDEX CONCURRENTLY` (PostgreSQL 12+), se construye el nuevo índice en paralelo ANTES de reemplazar el viejo, sin tiempos sin cobertura.
+
+### 🛠️ Comandos REINDEX
+
+```sql
+-- Reconstruir UN índice específico
+REINDEX INDEX idx_ventas_cliente;
+
+-- Reconstruir TODOS los índices de una tabla
+REINDEX TABLE ventas;
+
+-- Reconstruir TODOS los índices de la base de datos actual
+-- (útil después de una restauración o actualización de versión)
+REINDEX DATABASE nombre_base;
+
+-- Reconstruir todos los índices del esquema actual
+REINDEX SCHEMA public;
+```
+
+```sql
+-- REINDEX CONCURRENTLY: el índice viejo sigue activo mientras se construye el nuevo
+-- No bloquea lecturas ni escrituras (recomendado para producción)
+-- Disponible desde PostgreSQL 12
+REINDEX INDEX CONCURRENTLY idx_ventas_cliente;
+REINDEX TABLE CONCURRENTLY ventas;
+```
+
+> ⚠️ `REINDEX CONCURRENTLY` es más lento y usa más recursos que el REINDEX normal, pero no bloquea la tabla. Úsalo cuando no puedas permitirte tiempo de inactividad.
+
+### 📊 ¿Cuándo hacer REINDEX?
+
+| Situación                                                            | ¿Se necesita REINDEX?                   |
+| :------------------------------------------------------------------- | :-------------------------------------- |
+| El índice está **corrompido** (ves errores al usarlo)                | ✅ Sí, urgente                           |
+| La tabla tuvo muchos `UPDATE`/`DELETE` y el índice tiene mucho bloat | ✅ Sí (o usa `REINDEX CONCURRENTLY`)     |
+| Las consultas con índice se volvieron lentas sin razón aparente      | ✅ Considera REINDEX                     |
+| Después de un `CLUSTER` en la tabla (reorganización física)          | ✅ Los índices secundarios se benefician |
+| Después de un `ALTER TYPE` en una columna indexada                   | ✅ Obligatorio                           |
+| La tabla tiene mucho bloat pero los índices están bien               | ❌ Usa VACUUM FULL, no REINDEX           |
+| El mantenimiento lo hace el autovacuum y todo va bien                | ❌ No es necesario                       |
+
+### 🔍 Detectar bloat en índices
+
+```sql
+-- Ver el tamaño de los índices y detectar bloat
+-- Un índice sano debería tener un ratio de bloat bajo
+SELECT
+    indexrelname                AS indice,
+    relname                     AS tabla,
+    pg_size_pretty(pg_relation_size(indexrelid)) AS tamanho_indice,
+    idx_scan                    AS veces_usado,
+    idx_tup_read                AS filas_leidas_via_indice
+FROM pg_stat_user_indexes
+JOIN pg_class ON pg_class.oid = indexrelid
+ORDER BY pg_relation_size(indexrelid) DESC
+LIMIT 15;
+```
+
+```sql
+-- Ver si hay índices inválidos (pueden quedar así si un REINDEX CONCURRENTLY falló)
+SELECT
+    schemaname,
+    tablename,
+    indexname,
+    indexdef
+FROM pg_indexes
+WHERE indexname IN (
+    SELECT indexrelid::regclass::text
+    FROM pg_index
+    WHERE NOT indisvalid
+);
+```
+
+### 📋 Resumen: la trinidad del mantenimiento PostgreSQL
+
+| Comando                | ¿Qué limpia?                                 | ¿Bloquea?    | ¿Cuándo usarlo?                               |
+| :--------------------- | :------------------------------------------- | :----------- | :-------------------------------------------- |
+| `ANALYZE`              | Estadísticas del planificador                | ❌ No         | Después de cambios masivos de datos           |
+| `VACUUM`               | Filas muertas (espacio lógico)               | ❌ No         | Mantenimiento regular (el autovacuum lo hace) |
+| `VACUUM FULL`          | Filas muertas + libera espacio al SO         | ✅ Sí (total) | Solo cuando el disco está lleno y hay ventana |
+| `VACUUM FREEZE`        | Filas muertas + previene XID wraparound      | ❌ No*        | Tablas viejas / riesgo de wraparound          |
+| `REINDEX`              | Fragmentación de índices / índices corruptos | ✅ Sí         | Índices dañados o con alto bloat              |
+| `REINDEX CONCURRENTLY` | Lo mismo que REINDEX                         | ❌ No         | Entornos de producción activos (PG12+)        |
+
+> *`VACUUM FREEZE` sin la cláusula `FULL` no bloquea la tabla.
+
+> 🏁 **Regla de Oro del Mantenimiento:** Deja que el **autovacuum** haga el trabajo del día a día. Intervenle manualmente solo cuando:
+> - Tienes una carga masiva de datos que el autovacuum no procesará rápido.
+> - Detectas alto bloat que está causando problemas de rendimiento o espacio.
+> - Ves índices inválidos o corruptos.
+> - El `age_xid` de alguna tabla se acerca al límite de wraparound.
