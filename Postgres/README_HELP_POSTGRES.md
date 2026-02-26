@@ -48,6 +48,13 @@ La idea es que sea **transferible, autoexplicativa y modular**, con ejemplos cla
     - [AUTOVACUUM](#autovacuum)
     - [VACUUM FREEZE](#vacuum-freeze)
   - [🔁 Reconstrucción de Índices (REINDEX)](#-reconstrucción-de-índices-reindex)
+- [📂 COPY — Carga y Exportación Masiva de Datos](#-copy--carga-y-exportación-masiva-de-datos)
+  - [📥 Importar CSV a una Tabla (COPY FROM)](#-importar-un-archivo-csv-a-una-tabla-copy-from)
+  - [📤 Exportar una Tabla a CSV (COPY TO)](#-exportar-una-tabla-a-un-archivo-csv-copy-to)
+  - [🔧 Opciones Avanzadas de COPY](#-opciones-avanzadas-de-copy)
+  - [🏗️ Crear Tabla y Cargar Datos en un Flujo](#-crear-tabla-y-cargar-datos-en-un-flujo)
+  - [\copy — COPY desde el Cliente (psql)](#copy--copy-desde-el-cliente-psql)
+  - [⚠️ Errores Comunes con COPY](#-errores-comunes-con-copy)
 
 ---
 
@@ -3582,3 +3589,511 @@ WHERE indexname IN (
 > - Detectas alto bloat que está causando problemas de rendimiento o espacio.
 > - Ves índices inválidos o corruptos.
 > - El `age_xid` de alguna tabla se acerca al límite de wraparound.
+
+---
+
+# 📂 COPY — Carga y Exportación Masiva de Datos
+
+## 🤔 ¿Qué es `COPY` y para qué sirve?
+
+Imagina que tienes una planilla de Excel con 500.000 clientes y necesitas meterlos a tu base de datos. Hacerlo fila por fila con `INSERT` tardaría **horas**. El comando `COPY` es la solución: carga o exporta datos masivamente de forma **ultrarrápida**.
+
+> 💡 **Analogía:** Si `INSERT` es como llenar un vaso de agua con una cuchara, `COPY` es como abrir la llave directamente sobre el vaso. Mismo resultado, tiempo radicalmente distinto.
+
+En términos prácticos, `COPY` sirve para dos cosas:
+
+| Dirección           | Comando     | ¿Qué hace?                                         |
+| :------------------ | :---------- | :------------------------------------------------- |
+| **Archivo → Tabla** | `COPY FROM` | Importa datos desde un archivo plano a una tabla.  |
+| **Tabla → Archivo** | `COPY TO`   | Exporta datos de una tabla (o query) a un archivo. |
+
+### ¿Qué es un "archivo plano" (flat file)?
+
+Un **archivo plano** es un archivo de texto simple donde cada línea representa un registro y los campos están separados por un delimitador (normalmente una coma `,` o un tabulador `\t`). El formato más común es el **CSV** (*Comma-Separated Values*).
+
+```
+# Ejemplo de archivo clientes.csv
+id,nombre,email,ciudad
+1,Ana García,ana@example.com,Madrid
+2,Luis Pérez,luis@example.com,Bogotá
+3,María López,maria@example.com,Buenos Aires
+```
+
+> ⚠️ **Importante:** El comando `COPY` (en mayúsculas) se ejecuta **en el servidor** de PostgreSQL. Existe también `\copy` (con barra) que se ejecuta **desde el cliente `psql`**, en tu máquina local. Los explicaremos a ambos más adelante.
+
+---
+
+## 📥 Importar un Archivo CSV a una Tabla (`COPY FROM`)
+
+### Escenario de ejemplo
+
+Tenemos este archivo en el servidor: `/datos/clientes.csv`
+
+```csv
+1,Ana García,ana@example.com,Madrid
+2,Luis Pérez,luis@example.com,Bogotá
+3,María López,maria@example.com,Buenos Aires
+```
+
+Y esta tabla en PostgreSQL:
+
+```sql
+CREATE TABLE clientes (
+    id      INTEGER,
+    nombre  VARCHAR(100),
+    email   VARCHAR(150),
+    ciudad  VARCHAR(80)
+);
+```
+
+### Sintaxis básica
+
+```sql
+-- Importar todo el archivo a la tabla
+-- COPY [tabla] FROM [ruta] WITH ([opciones])
+
+COPY clientes
+FROM '/datos/clientes.csv'
+WITH (
+    FORMAT CSV        -- El archivo es CSV (separado por comas)
+);
+```
+
+### Con encabezado (header)
+
+La mayoría de los CSV incluyen una primera línea con los nombres de las columnas. Usa `HEADER TRUE` para que PostgreSQL la ignore y no intente insertarla como dato:
+
+```csv
+# clientes_con_header.csv
+id,nombre,email,ciudad
+1,Ana García,ana@example.com,Madrid
+2,Luis Pérez,luis@example.com,Bogotá
+```
+
+```sql
+COPY clientes
+FROM '/datos/clientes_con_header.csv'
+WITH (
+    FORMAT CSV,
+    HEADER TRUE      -- Ignora la primera línea (encabezado)
+);
+```
+
+### Especificar columnas
+
+Si el CSV **no tiene todas las columnas** de la tabla, o si el orden difiere, indícale a PostgreSQL qué columnas corresponden:
+
+```sql
+-- El CSV solo tiene nombre y email (sin id ni ciudad)
+COPY clientes (nombre, email)
+FROM '/datos/solo_contactos.csv'
+WITH (
+    FORMAT CSV,
+    HEADER TRUE
+);
+```
+
+> 💡 Las columnas que no se mencionen tomarán su valor por defecto (`DEFAULT`) o `NULL`.
+
+---
+
+## 📤 Exportar una Tabla a un Archivo CSV (`COPY TO`)
+
+`COPY TO` es igualmente poderoso. Exporta filas de una tabla (o el resultado de un `SELECT`) a un archivo.
+
+### Exportar la tabla completa
+
+```sql
+-- Exporta TODA la tabla clientes a un archivo CSV
+COPY clientes
+TO '/datos/export_clientes.csv'
+WITH (
+    FORMAT CSV,
+    HEADER TRUE    -- Incluye la primera línea con nombres de columnas
+);
+```
+
+El archivo resultante tendrá este aspecto:
+```
+id,nombre,email,ciudad
+1,Ana García,ana@example.com,Madrid
+2,Luis Pérez,luis@example.com,Bogotá
+3,María López,maria@example.com,Buenos Aires
+```
+
+### Exportar solo un subconjunto de datos (con `SELECT`)
+
+Esta es una de las funciones más útiles: puedes exportar el **resultado de cualquier consulta**.
+
+```sql
+-- Exportar solo los clientes de Madrid
+COPY (
+    SELECT id, nombre, email
+    FROM clientes
+    WHERE ciudad = 'Madrid'
+    ORDER BY nombre
+)
+TO '/datos/clientes_madrid.csv'
+WITH (
+    FORMAT CSV,
+    HEADER TRUE
+);
+```
+
+> 💡 **Truco pro:** La capacidad de exportar resultados de `SELECT` convierte a `COPY TO` en una herramienta poderosa de **reportería**. Puedes generar un informe de ventas del mes, filtrado y ordenado, directo a un CSV con un solo comando.
+
+---
+
+## 🔧 Opciones Avanzadas de `COPY`
+
+El bloque `WITH (...)` acepta varias opciones que controlan cómo se interpreta el archivo:
+
+| Opción       | Descripción                                                                     | Ejemplo de valor      |
+| :----------- | :------------------------------------------------------------------------------ | :-------------------- |
+| `FORMAT`     | Formato del archivo. Opciones: `CSV`, `TEXT` (por defecto), `BINARY`.           | `FORMAT CSV`          |
+| `HEADER`     | Si `TRUE`, la primera línea es el encabezado (nombres de columna). Solo en CSV. | `HEADER TRUE`         |
+| `DELIMITER`  | Carácter que separa los campos. Por defecto es `,` en CSV y tabulador en TEXT.  | `DELIMITER ';'`       |
+| `NULL`       | Cadena que representa valores nulos en el archivo.                              | `NULL ''`             |
+| `QUOTE`      | Carácter usado para encerrar valores con caracteres especiales.                 | `QUOTE '"'`           |
+| `ESCAPE`     | Carácter para escapar el carácter de comilla dentro de un valor.                | `ESCAPE '\\'`         |
+| `ENCODING`   | Codificación de caracteres del archivo (ej. `UTF8`, `LATIN1`).                  | `ENCODING 'UTF8'`     |
+| `FORCE_NULL` | Lista de columnas donde una cadena vacía `''` debe tratarse como `NULL`.        | `FORCE_NULL (ciudad)` |
+
+### Ejemplo con opciones avanzadas
+
+```sql
+-- Importar un CSV europeo:
+-- - Separado por punto y coma (;) en lugar de coma
+-- - Texto encerrado en comillas simples (')
+-- - Campos vacíos tratados como NULL
+-- - Codificación Latin1 (típico de archivos generados en Windows)
+
+COPY clientes
+FROM '/datos/clientes_europeo.csv'
+WITH (
+    FORMAT    CSV,
+    HEADER    TRUE,
+    DELIMITER ';',
+    QUOTE     '''',        -- Comilla simple dentro de la cadena se escapa duplicándola
+    NULL      '',
+    ENCODING  'LATIN1'
+);
+```
+
+### Diferencia entre los formatos
+
+| Formato  | ¿Cuándo usarlo?                                                                                                                                                             |
+| :------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CSV`    | El más común. Intercambio con Excel, Google Sheets, ETLs.                                                                                                                   |
+| `TEXT`   | Formato nativo de PostgreSQL. Campos separados por tabulador. Más rápido.                                                                                                   |
+| `BINARY` | Formato binario de PostgreSQL. El más rápido pero **no es legible** por humanos ni compatible entre versiones. Solo para mover datos entre instancias PostgreSQL idénticas. |
+
+---
+
+## 🏗️ Crear Tabla y Cargar Datos en un Flujo
+
+Un flujo de trabajo muy común es: **tengo un CSV, necesito crear una tabla que lo contenga y cargarlo**. Aquí dos estrategias:
+
+### Estrategia 1: Crear la tabla manualmente y luego usar COPY
+
+Es el enfoque más controlado y recomendado para producción:
+
+```sql
+-- PASO 1: Crear la tabla con los tipos de dato correctos
+CREATE TABLE productos (
+    sku         VARCHAR(20)    PRIMARY KEY,
+    nombre      VARCHAR(150)   NOT NULL,
+    precio      NUMERIC(10,2)  NOT NULL,
+    stock       INTEGER        DEFAULT 0,
+    activo      BOOLEAN        DEFAULT TRUE,
+    creado_en   DATE
+);
+
+-- PASO 2: Cargar los datos del CSV
+COPY productos
+FROM '/datos/catalogo_productos.csv'
+WITH (
+    FORMAT CSV,
+    HEADER TRUE
+);
+
+-- PASO 3: Verificar que los datos se cargaron correctamente
+SELECT COUNT(*)  FROM productos;   -- Cuántas filas hay
+SELECT *         FROM productos LIMIT 5;  -- Ver los primeros registros
+```
+
+### Estrategia 2: Crear tabla temporal para exploración rápida
+
+Cuando tienes un CSV y quieres explorar sus datos **sin comprometerte** con una estructura definitiva, usa una tabla temporal. Desaparece al cerrar la sesión:
+
+```sql
+-- Tabla temporal: ideal para exploración o ETL intermedio
+CREATE TEMP TABLE tmp_carga_productos (
+    sku         TEXT,   -- TEXT acepta cualquier texto, sin límite ni validación
+    nombre      TEXT,
+    precio      TEXT,   -- Cargamos como texto para no fallar en formatos raros
+    stock       TEXT,
+    activo      TEXT,
+    creado_en   TEXT
+);
+
+-- Cargar el CSV sin restricciones
+COPY tmp_carga_productos
+FROM '/datos/catalogo_productos.csv'
+WITH (
+    FORMAT CSV,
+    HEADER TRUE
+);
+
+-- Explorar los datos: verificar formatos, nulos, duplicados
+SELECT * FROM tmp_carga_productos LIMIT 10;
+SELECT COUNT(*), precio FROM tmp_carga_productos GROUP BY precio;
+
+-- Una vez que entiendes los datos, insertar en la tabla definitiva con conversión de tipos
+INSERT INTO productos (sku, nombre, precio, stock, activo, creado_en)
+SELECT
+    sku,
+    nombre,
+    precio::NUMERIC(10,2),
+    stock::INTEGER,
+    activo::BOOLEAN,
+    creado_en::DATE
+FROM tmp_carga_productos
+WHERE precio IS NOT NULL AND precio <> '';  -- Filtrar filas con precio inválido
+```
+
+> 💡 **¿Por qué cargar todo como `TEXT` primero?** Porque `COPY` es rígido: si una sola fila tiene un valor que no encaja en el tipo de dato esperado, **aborta toda la operación**. Cargar como texto te permite ver qué filas tienen problemas antes de hacer la conversión.
+
+### Estrategia 3: CREATE TABLE + INSERT con SELECT (todo en SQL, sin archivo físico)
+
+A veces necesitas crear una tabla **como copia de otra** o de una consulta:
+
+```sql
+-- Crear una tabla nueva con la misma estructura Y datos de otra tabla
+CREATE TABLE clientes_backup AS
+SELECT * FROM clientes;
+
+-- Crear una tabla con estructura y datos de una consulta
+CREATE TABLE clientes_madrid AS
+SELECT id, nombre, email
+FROM clientes
+WHERE ciudad = 'Madrid';
+
+-- Crear solo la estructura (sin datos) usando WHERE FALSE
+CREATE TABLE clientes_vacia AS
+SELECT * FROM clientes WHERE FALSE;
+```
+
+> ⚠️ `CREATE TABLE AS SELECT` **no copia** los índices, constraints ni secuencias de la tabla original. Si los necesitas, créalos explícitamente después.
+
+---
+
+## `\copy` — COPY desde el Cliente (psql)
+
+### ¿Por qué existe `\copy`?
+
+El comando `COPY` (el del servidor) **lee y escribe archivos en el servidor**. Esto tiene una implicación importante:
+
+- Si el servidor está en `192.168.1.100` y tu CSV está en **tu laptop**, el servidor no puede ver ese archivo.
+- Necesitas que el archivo esté en el servidor, o usar `\copy`.
+
+`\copy` es un comando de `psql` (no de SQL) que funciona igual que `COPY`, pero **transfiere los datos a través de la conexión de red**: lee el archivo en tu máquina y lo envía fila por fila al servidor.
+
+```
++──────────────────────────────────────+
+│                                      │
+│  Tu Laptop                           │
+│  ┌──────────┐   conexión de red      │
+│  │ clientes │ ──────────────────────►│ Servidor PostgreSQL
+│  │  .csv    │  (\copy envía los datos│
+│  └──────────┘   por la red)          │
+│                                      │
++──────────────────────────────────────+
+```
+
+### Sintaxis de `\copy`
+
+Es idéntica a `COPY` pero con barra invertida al inicio, y **se escribe en una sola línea** dentro de `psql`:
+
+```sql
+-- Importar desde tu máquina local al servidor
+\copy clientes FROM '/home/usuario/descargas/clientes.csv' WITH (FORMAT CSV, HEADER TRUE);
+
+-- Exportar del servidor a tu máquina local
+\copy clientes TO '/home/usuario/descargas/export_clientes.csv' WITH (FORMAT CSV, HEADER TRUE);
+
+-- Exportar resultado de SELECT a tu máquina local
+\copy (SELECT * FROM clientes WHERE ciudad = 'Madrid') TO '/home/usuario/informe_madrid.csv' WITH (FORMAT CSV, HEADER TRUE);
+```
+
+### Diferencias clave: `COPY` vs `\copy`
+
+| Característica              | `COPY` (servidor)                               | `\copy` (cliente psql)                    |
+| :-------------------------- | :---------------------------------------------- | :---------------------------------------- |
+| **¿Dónde se ejecuta?**      | En el servidor PostgreSQL                       | En tu máquina (cliente psql)              |
+| **¿Dónde está el archivo?** | En el sistema de archivos del **servidor**      | En el sistema de archivos del **cliente** |
+| **Permisos requeridos**     | Requiere ser **superusuario**                   | Cualquier usuario puede usarlo            |
+| **Velocidad**               | Más rápido (lectura local en el servidor)       | Más lento (datos viajan por la red)       |
+| **¿Se usa en scripts SQL?** | ✅ Sí (dentro de `.sql` ejecutados en servidor)  | Solo funciona **dentro de `psql`**        |
+| **Uso típico**              | ETL en servidor, scripts de carga automatizados | Trabajo en local, desarrollo, pruebas     |
+
+> 💡 **Regla práctica:** Si estás trabajando en tu computadora y el servidor está en otro lugar, usa `\copy`. Si estás ejecutando un script directamente en el servidor (o via automatización), usa `COPY`.
+
+---
+
+## ⚠️ Errores Comunes con `COPY`
+
+### Error 1: Archivo no encontrado / permisos insuficientes
+
+```
+ERROR: could not open file "/datos/clientes.csv" for reading: No such file or directory
+```
+
+**Causa:** El servidor no puede encontrar el archivo. Recuerda que `COPY` busca el archivo **en el servidor**, no en tu máquina.
+
+**Soluciones:**
+- Verifica que la ruta sea correcta en el servidor.
+- Si el archivo está en tu máquina local, usa `\copy` en su lugar.
+- Si debes usar `COPY`, primero copia el archivo al servidor con `scp`.
+
+---
+
+### Error 2: Número de columnas incorrecto
+
+```
+ERROR: extra data after last expected column
+CONTEXT: COPY clientes, line 3: "1,Ana García,ana@example.com,Madrid,España"
+```
+
+**Causa:** El CSV tiene más columnas que la tabla.
+
+**Solución:** Especifica las columnas explícitamente:
+
+```sql
+-- Especifica solo las columnas que tiene tu CSV
+COPY clientes (id, nombre, email, ciudad)
+FROM '/datos/clientes.csv'
+WITH (FORMAT CSV, HEADER TRUE);
+```
+
+---
+
+### Error 3: Tipo de dato incompatible
+
+```
+ERROR: invalid input syntax for type integer: "N/A"
+CONTEXT: COPY productos, line 7, column stock: "N/A"
+```
+
+**Causa:** Una celda del CSV tiene un valor que no se puede convertir al tipo de dato de la columna (`INTEGER` no puede ser `"N/A"`).
+
+**Soluciones:**
+1. Limpiar el CSV antes de importarlo (reemplazar `N/A` por vacío o `0`).
+2. Cargar todo como `TEXT` en una tabla temporal, limpiar los datos con SQL, y luego insertar en la tabla final con conversión de tipos.
+
+---
+
+### Error 4: Permiso denegado (superusuario requerido)
+
+```
+ERROR: must be superuser or a member of the pg_read_server_files role to COPY from a file
+```
+
+**Causa:** `COPY FROM` con ruta de archivo requiere privilegios elevados.
+
+**Solución:** Si no eres superusuario, usa `\copy` desde `psql`. Si debes usar `COPY`, pide al administrador que ejecute el comando o que te otorgue el rol `pg_read_server_files`:
+
+```sql
+-- El administrador puede conceder el rol para leer archivos del servidor
+GRANT pg_read_server_files TO mi_usuario;
+
+-- O el rol para escribir archivos (para COPY TO)
+GRANT pg_write_server_files TO mi_usuario;
+```
+
+---
+
+### Error 5: Encoding (codificación de caracteres)
+
+```
+ERROR: invalid byte sequence for encoding "UTF8": 0xe1
+```
+
+**Causa:** El archivo fue creado con una codificación diferente (típicamente `LATIN1` o `WIN1252` en archivos generados por Excel en Windows).
+
+**Solución:** Especifica la codificación del archivo:
+
+```sql
+COPY clientes
+FROM '/datos/clientes_excel.csv'
+WITH (
+    FORMAT CSV,
+    HEADER TRUE,
+    ENCODING 'LATIN1'   -- O 'WIN1252' si fue generado por Excel en Windows
+);
+```
+
+Si no sabes la codificación, puedes detectarla en Linux:
+```bash
+file -i /datos/clientes_excel.csv
+# Resultado ejemplo: /datos/clientes_excel.csv: text/plain; charset=iso-8859-1
+```
+
+---
+
+## 📋 Resumen Final: Cheat Sheet de `COPY`
+
+```sql
+-- ── IMPORTAR ────────────────────────────────────────────────────────────────
+
+-- Básico (sin header)
+COPY tabla FROM '/ruta/archivo.csv' WITH (FORMAT CSV);
+
+-- Con encabezado
+COPY tabla FROM '/ruta/archivo.csv' WITH (FORMAT CSV, HEADER TRUE);
+
+-- Especificando columnas
+COPY tabla (col1, col2, col3) FROM '/ruta/archivo.csv' WITH (FORMAT CSV, HEADER TRUE);
+
+-- Con opciones avanzadas (delimitador, nulos, encoding)
+COPY tabla FROM '/ruta/archivo.csv'
+  WITH (FORMAT CSV, HEADER TRUE, DELIMITER ';', NULL '', ENCODING 'LATIN1');
+
+-- Desde el cliente (archivo en tu máquina local)
+\copy tabla FROM '/ruta/local/archivo.csv' WITH (FORMAT CSV, HEADER TRUE);
+
+
+-- ── EXPORTAR ────────────────────────────────────────────────────────────────
+
+-- Tabla completa
+COPY tabla TO '/ruta/destino.csv' WITH (FORMAT CSV, HEADER TRUE);
+
+-- Solo algunas columnas
+COPY tabla (col1, col2) TO '/ruta/destino.csv' WITH (FORMAT CSV, HEADER TRUE);
+
+-- Resultado de una consulta
+COPY (SELECT * FROM tabla WHERE condicion ORDER BY col1)
+  TO '/ruta/destino.csv' WITH (FORMAT CSV, HEADER TRUE);
+
+-- Al cliente (archivo en tu máquina local)
+\copy tabla TO '/ruta/local/destino.csv' WITH (FORMAT CSV, HEADER TRUE);
+
+
+-- ── CREAR TABLA Y CARGAR ────────────────────────────────────────────────────
+
+-- Copia exacta de otra tabla (estructura + datos)
+CREATE TABLE nueva_tabla AS SELECT * FROM tabla_origen;
+
+-- Solo estructura (sin datos)
+CREATE TABLE nueva_tabla AS SELECT * FROM tabla_origen WHERE FALSE;
+
+-- Estructura + datos filtrados
+CREATE TABLE tabla_subset AS
+  SELECT col1, col2 FROM tabla_origen WHERE condicion;
+```
+
+> 🏁 **Regla de Oro del COPY:**
+> - Si el archivo está en el **servidor** → usa `COPY`.
+> - Si el archivo está en tu **máquina local** → usa `\copy`.
+> - Si no sabes el formato exacto del CSV → carga todo como `TEXT` en una tabla temporal primero.
+> - Para carga masiva en producción → considera deshabilitar temporalmente los índices antes del `COPY` y reconstruirlos después con `REINDEX`; esto puede ser hasta 10x más rápido.
