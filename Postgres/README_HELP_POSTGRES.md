@@ -55,6 +55,17 @@ La idea es que sea **transferible, autoexplicativa y modular**, con ejemplos cla
   - [🏗️ Crear Tabla y Cargar Datos en un Flujo](#-crear-tabla-y-cargar-datos-en-un-flujo)
   - [\copy — COPY desde el Cliente (psql)](#copy--copy-desde-el-cliente-psql)
   - [⚠️ Errores Comunes con COPY](#-errores-comunes-con-copy)
+- [🔁 Replicación y Alta Disponibilidad](#-replicación-y-alta-disponibilidad)
+  - [🤔 ¿Qué es la Replicación de Datos?](#-qué-es-la-replicación-de-datos)
+  - [🏗️ Streaming Replication: Arquitectura](#-streaming-replication-arquitectura)
+  - [⚡ Tipos de Replicación](#-tipos-de-replicación)
+    - [Replicación Asíncrona](#replicación-asíncrona-el-modo-por-defecto)
+    - [Replicación Síncrona](#replicación-síncrona-cero-pérdida-de-datos)
+    - [Replicación en Cascada](#replicación-en-cascada-réplica-de-réplica)
+  - [🛠️ Configuración de Streaming Replication (Paso a Paso)](#-configuración-de-streaming-replication-paso-a-paso)
+  - [🌐 Arquitectura Global de Replicación](#-arquitectura-global-de-replicación)
+  - [📊 Monitoreo de la Replicación](#-monitoreo-de-la-replicación)
+  - [🚨 Failover y Promoción de Réplica](#-failover-y-promoción-de-réplica)
 
 ---
 
@@ -4097,3 +4108,747 @@ CREATE TABLE tabla_subset AS
 > - Si el archivo está en tu **máquina local** → usa `\copy`.
 > - Si no sabes el formato exacto del CSV → carga todo como `TEXT` en una tabla temporal primero.
 > - Para carga masiva en producción → considera deshabilitar temporalmente los índices antes del `COPY` y reconstruirlos después con `REINDEX`; esto puede ser hasta 10x más rápido.
+
+---
+
+# 🔁 Replicación y Alta Disponibilidad
+
+## 🤔 ¿Qué es la Replicación de Datos?
+
+Imagina que tienes un documento de trabajo muy importante guardado **solo en tu computadora**. Si esa computadora se rompe, pierdes todo. La solución natural sería tener una **copia exacta actualizada** en otra máquina.
+
+Eso es, en esencia, la **replicación de datos**: mantener una o varias copias idénticas de tu base de datos en diferentes servidores, sincronizadas en tiempo real (o casi real).
+
+### ¿Por qué replicar?
+
+| Problema del Mundo Real                              | Cómo Ayuda la Replicación                                     |
+| :--------------------------------------------------- | :------------------------------------------------------------ |
+| El servidor principal falla (disco, red, apagón)     | Un servidor de respaldo toma el control automáticamente       |
+| Miles de usuarios hacen consultas al mismo tiempo    | Las consultas de lectura se distribuyen entre réplicas        |
+| Necesitas hacer mantenimiento sin apagar el servicio | Puedes hacer mantenimiento en el primario y redirigir trafíco |
+| Recuperación ante desastre (datacenter caído)        | Una réplica en otra región geográfica salva el día            |
+
+### Conceptos Clave
+
+Antes de entrar en los detalles técnicos, definamos los actores principales:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    ARQUITECTURA BÁSICA                       │
+│                                                             │
+│  ┌──────────────────┐          ┌──────────────────┐         │
+│  │   PRIMARIO       │          │   RÉPLICA(S)     │         │
+│  │  (Primary /      │─────────►│  (Standby /      │         │
+│  │   Master)        │  WAL     │   Secondary)     │         │
+│  │                  │          │                  │         │
+│  │  ✅ Lectura       │          │  ✅ Lectura       │         │
+│  │  ✅ Escritura     │          │  ❌ Escritura     │         │
+│  └──────────────────┘          └──────────────────┘         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+- **Primario (Primary/Master):** Es el servidor principal. Aquí se realizan **todas las escrituras** (INSERT, UPDATE, DELETE). También puede aceptar lecturas.
+- **Réplica / Standby (Secondary):** Es una copia del primario. Solo acepta **lecturas** (SELECT). Está siempre sincronizando los cambios que llegan del primario.
+- **WAL (Write-Ahead Log):** El "diario de cambios" de PostgreSQL. Cada modificación se anota aquí primero. Este es el mecanismo que permite la replicación: el primario comparte su WAL con las réplicas.
+
+> 💡 **Analogía perfecta:** Piensa en el primario como el chef principal de un restaurante que tiene el cuaderno de recetas original. Las réplicas son sus alumnos que copian al mismo tiempo cada anotación que el chef escribe. Si el chef se enferma, uno de los alumnos puede tomar su lugar porque tiene la misma información.
+
+---
+
+## 🏗️ Streaming Replication: Arquitectura
+
+**Streaming Replication** es el mecanismo de replicación nativo de PostgreSQL, disponible desde la versión 9.0. Es el más usado en producción por su eficiencia y confiabilidad.
+
+### ¿Cómo Funciona Internamente?
+
+El proceso tiene actores bien definidos y una secuencia clara. Todo gira alrededor de los **WAL** (Write-Ahead Logs):
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  SERVIDOR PRIMARIO                                                  │
+│                                                                     │
+│  Aplicación  ──► Backend Process ──► WAL Buffer ──► Disco (pg_wal/) │
+│                                           │                         │
+│                                           │                         │
+│                              ┌────────────▼────────────┐            │
+│                              │    WAL Sender Process   │            │
+│                              │  (walsender)            │            │
+│                              └────────────┬────────────┘            │
+└───────────────────────────────────────────┼─────────────────────────┘
+                               RED (TCP/IP) │
+┌───────────────────────────────────────────┼─────────────────────────┐
+│  SERVIDOR RÉPLICA                         │                         │
+│                              ┌────────────▼────────────┐            │
+│                              │    WAL Receiver Process │            │
+│                              │  (walreceiver)          │            │
+│                              └────────────┬────────────┘            │
+│                                           │                         │
+│  Startup Process ◄── WAL Buffer ◄─────────┘                         │
+│       │                                                             │
+│       ▼                                                             │
+│  Aplica cambios al disco local                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Los Procesos en Detalle
+
+| Proceso             | ¿Dónde vive? | ¿Qué hace?                                                           |
+| :------------------ | :----------- | :------------------------------------------------------------------- |
+| **WAL Writer**      | Primario     | Escribe los cambios al WAL antes de aplicarlos a los datos           |
+| **WAL Sender**      | Primario     | Lee el WAL y lo envía por la red a cada réplica conectada            |
+| **WAL Receiver**    | Réplica      | Recibe el WAL del primario y lo guarda localmente                    |
+| **Startup Process** | Réplica      | Lee el WAL recibido y lo aplica para mantener los datos actualizados |
+
+### ¿Qué son los WAL Segments?
+
+PostgreSQL no envía cambio por cambio: agrupa los cambios en **segmentos WAL** de 16 MB cada uno. Cada segmento tiene un nombre único (LSN - Log Sequence Number) que permite saber exactamente qué cambios ya fueron aplicados:
+
+```bash
+# Ver archivos WAL en el servidor (como postgres)
+ls -lh /var/lib/postgresql/16/main/pg_wal/
+
+# Ejemplo de salida:
+# 000000010000000000000001  ← Segmento WAL con su ID único
+# 000000010000000000000002
+# 000000010000000000000003
+```
+
+### Replication Slot: El "Marcador de Posición"
+
+Un **Replication Slot** es un mecanismo que garantiza que el primario **no elimine** segmentos WAL que la réplica todavía no ha consumido. Sin él, si la réplica se desconecta temporalmente, el primario podría limpiar su WAL y la réplica quedaría "desfasada" sin poder ponerse al día.
+
+```
+Con Replication Slot:
+Primario: [WAL 1] [WAL 2] [WAL 3] [WAL 4] [WAL 5]
+                    ▲
+                    │ La réplica llegó hasta aquí.
+                    │ El slot garantiza que WAL 2, 3, 4, 5 no se borren.
+
+Sin Replication Slot:
+Primario: [WAL 3] [WAL 4] [WAL 5]  ← WAL 1 y 2 ya fueron limpiados!
+                                      La réplica se quedó sin datos para ponerse al día.
+```
+
+> ⚠️ **Precaución con los slots:** Si una réplica se desconecta por mucho tiempo y el slot la retiene, el disco del primario puede llenarse con WAL acumulados. Monitorea siempre el tamaño del WAL en producción.
+
+---
+
+## ⚡ Tipos de Replicación
+
+### Replicación Asíncrona (El Modo Por Defecto)
+
+Es el **modo predeterminado** en PostgreSQL. El primario confirma que una transacción fue exitosa **sin esperar** a que la réplica la haya recibido y aplicado.
+
+```
+Cliente                Primario                  Réplica
+   │                      │                         │
+   │── INSERT ... ───────►│                         │
+   │                      │── WAL enviado ─────────►│
+   │◄── COMMIT OK ────────│  (sin esperar respuesta)│
+   │                      │                         │── aplica después...
+```
+
+**Ventajas:**
+- ✅ Máximo rendimiento (latencia de escritura mínima)
+- ✅ El primario nunca se bloquea esperando a la réplica
+- ✅ Si la réplica falla, el primario sigue funcionando sin interrupciones
+
+**Desventajas:**
+- ❌ **Pequeña ventana de pérdida de datos:** Si el primario falla justo antes de que la réplica reciba el WAL, esas transacciones se pierden (típicamente milisegundos o segundos de datos)
+
+**¿Cuándo usarla?**
+En la mayoría de aplicaciones web donde una pérdida de milisegundos de datos es aceptable a cambio de alto rendimiento.
+
+```sql
+-- Configuración por defecto, no necesitas hacer nada especial
+-- El parámetro en postgresql.conf:
+-- synchronous_commit = off  (para máxima velocidad)
+-- synchronous_commit = local (por defecto: confirma solo en el disco local)
+```
+
+---
+
+### Replicación Síncrona (Cero Pérdida de Datos)
+
+El primario **espera la confirmación** de una o más réplicas antes de responder `COMMIT OK` al cliente. Garantiza **cero pérdida de datos** en caso de fallo del primario.
+
+```
+Cliente                Primario                  Réplica
+   │                      │                         │
+   │── INSERT ... ───────►│                         │
+   │                      │── WAL enviado ─────────►│
+   │                      │◄── confirmación ────────│ ← Réplica recibió el WAL
+   │◄── COMMIT OK ────────│                         │
+   │                      │                         │── aplica el cambio...
+```
+
+**Ventajas:**
+- ✅ **Cero pérdida de datos** garantizada (RPO = 0)
+- ✅ Ideal para sistemas financieros, médicos o cualquier dato crítico
+
+**Desventajas:**
+- ❌ **Mayor latencia de escritura:** Cada COMMIT debe esperar que la réplica confirme recepción
+- ❌ Si la réplica se cae o hay problemas de red, las escrituras en el primario **se bloquean** hasta que haya al menos una réplica síncrona disponible
+
+**¿Cuándo usarla?**
+Sistemas financieros, bancarios, médicos, o cualquier aplicación donde la pérdida de cualquier transacción sea inaceptable.
+
+```ini
+# En postgresql.conf del PRIMARIO:
+synchronous_commit = on                           # Espera confirmación de la réplica
+synchronous_standby_names = 'replica1'            # Nombre(s) de la(s) réplica(s) síncronas
+
+# Para requerir confirmación de AL MENOS 1 de 2 réplicas:
+synchronous_standby_names = 'ANY 1 (replica1, replica2)'
+
+# Para requerir confirmación de TODAS las réplicas (más seguro, más lento):
+synchronous_standby_names = 'FIRST 2 (replica1, replica2)'
+```
+
+#### Niveles de `synchronous_commit`
+
+| Nivel          | ¿Qué garantiza?                                             | Latencia |
+| :------------- | :---------------------------------------------------------- | :------- |
+| `off`          | Nada (ni siquiera escritura local a WAL antes de responder) | Mínima   |
+| `local`        | Escritura en WAL del primario (por defecto)                 | Baja     |
+| `remote_write` | Réplica recibió y escribió en memoria (no en disco aún)     | Media    |
+| `on`           | Réplica recibió y escribió en su WAL (en disco)             | Alta     |
+| `remote_apply` | Réplica recibió, escribió Y aplicó los cambios              | Máxima   |
+
+---
+
+### Replicación en Cascada (Réplica de Réplica)
+
+Una réplica puede a su vez actuar como fuente de replicación para otras réplicas. En lugar de que todas se conecten al primario, forman una **cadena**.
+
+```
+┌──────────────┐     WAL     ┌──────────────┐     WAL     ┌──────────────┐
+│   PRIMARIO   │────────────►│  RÉPLICA 1   │────────────►│  RÉPLICA 2   │
+│  (Puerto 5432)│             │ (Puerto 5433) │             │ (Puerto 5434) │
+└──────────────┘             └──────────────┘             └──────────────┘
+     ▲                                                          │
+     │                                                     Réplica 3, 4...
+     │ Escribe la aplicación
+```
+
+**Ventajas:**
+- ✅ Reduce la carga del primario (no tiene que replicar a 10 servidores directamente)
+- ✅ Escala horizontalmente para muchas réplicas de lectura
+- ✅ Ideal para arquitecturas geográficas distribuidas (réplica regional intermedia)
+
+**Desventajas:**
+- ❌ Las réplicas al final de la cadena tienen un retraso acumulado mayor
+- ❌ Si una réplica intermedia falla, todas las réplicas debajo de ella se desconectan
+
+**Configuración:** La réplica intermedia solo necesita tener `hot_standby = on` y `wal_level = replica`. Las réplicas de nivel inferior se configuran para conectarse a la réplica intermedia en lugar de al primario.
+
+---
+
+## 🛠️ Configuración de Streaming Replication (Paso a Paso)
+
+Vamos a configurar un escenario real: **1 servidor primario + 1 réplica** usando replicación asíncrona (el modo más común).
+
+### Escenario de Ejemplo
+
+```
+Primario:  IP 192.168.1.10  │  Puerto 5432
+Réplica:   IP 192.168.1.11  │  Puerto 5432
+```
+
+---
+
+### PASO 1: Configurar el Servidor Primario
+
+#### 1.1 — Editar `postgresql.conf`
+
+```bash
+# Abrir el archivo de configuración del primario
+sudo nano /etc/postgresql/16/main/postgresql.conf
+```
+
+Busca y modifica (o agrega) los siguientes parámetros:
+
+```ini
+# ── Nivel de WAL: debe ser 'replica' o 'logical' para replicación ────────────
+wal_level = replica
+
+# ── Número máximo de conexiones de replicación (WAL Senders) ────────────────
+# Asegúrate de que es mayor al número de réplicas que tendrás.
+max_wal_senders = 5
+
+# ── Retención de WAL para recuperación de réplicas rezagadas ──────────────
+# Cuántos segmentos WAL mantener disponibles en caso de que una réplica
+# se desconecte temporalmente.
+wal_keep_size = 256MB      # PostgreSQL 13+
+# wal_keep_segments = 16  # PostgreSQL 12 y anteriores
+
+# ── Activar conexiones en standby (para réplicas de lectura) ──────────────
+hot_standby = on
+
+# ── Dirección de escucha (para aceptar conexiones de la réplica) ──────────
+# '*' escucha en todas las interfaces de red
+listen_addresses = '*'
+```
+
+#### 1.2 — Crear el Usuario de Replicación
+
+Conéctate al primario con `psql` y crea un usuario dedicado para replicación:
+
+```sql
+-- Este usuario es el que la réplica usará para conectarse al primario
+-- y obtener el WAL
+CREATE USER replicator WITH REPLICATION LOGIN PASSWORD 'mi_password_seguro';
+```
+
+> 💡 **Buena práctica:** Crea siempre un usuario específico para replicación. No uses el superusuario `postgres` para esto.
+
+#### 1.3 — Editar `pg_hba.conf` (Autenticación)
+
+Permite que el servidor réplica se conecte para replicación:
+
+```bash
+sudo nano /etc/postgresql/16/main/pg_hba.conf
+```
+
+Agrega esta línea al final:
+
+```
+# Formato: tipo  base_de_datos     usuario       IP_cliente/mask   método
+  host    replication               replicator    192.168.1.11/32   scram-sha-256
+```
+
+> ⚠️ Reemplaza `192.168.1.11` con la IP real de tu servidor réplica.
+
+#### 1.4 — Reiniciar el Primario
+
+```bash
+sudo systemctl restart postgresql
+
+# Verificar que está corriendo
+sudo systemctl status postgresql
+```
+
+---
+
+### PASO 2: Preparar el Servidor Réplica
+
+#### 2.1 — Tomar el Snapshot Inicial con `pg_basebackup`
+
+Este comando copia todos los datos del primario al servidor réplica. **Es obligatorio** hacerlo antes de iniciar la replicación, ya que la réplica necesita una copia base para comenzar a aplicar el WAL desde ahí.
+
+```bash
+# Ejecutar este comando DESDE el servidor réplica (192.168.1.11)
+# Detener PostgreSQL en la réplica primero si está corriendo
+sudo systemctl stop postgresql
+
+# Limpiar el directorio de datos de la réplica (se llenará con los datos del primario)
+sudo rm -rf /var/lib/postgresql/16/main/*
+
+# Hacer el basebackup (conectarse al primario)
+sudo -u postgres pg_basebackup \
+  --host=192.168.1.10 \
+  --port=5432 \
+  --username=replicator \
+  --pgdata=/var/lib/postgresql/16/main \
+  --wal-method=stream \
+  --format=p \
+  --progress \
+  --checkpoint=fast \
+  --verbose
+
+# Te pedirá la contraseña del usuario 'replicator'
+```
+
+Cuando termine, el directorio de datos de la réplica es una **copia exacta** del primario en el momento en que se ejecutó.
+
+#### 2.2 — Crear el Archivo `standby.signal`
+
+Este archivo vacío le dice a PostgreSQL que arranque en **modo standby** (réplica) en lugar de como servidor principal:
+
+```bash
+# Crear el archivo mágico que activa el modo standby
+sudo -u postgres touch /var/lib/postgresql/16/main/standby.signal
+```
+
+> 💡 En PostgreSQL 12+, `standby.signal` reemplaza al anterior `recovery.conf`. Su simple existencia en el directorio de datos activa el modo réplica.
+
+#### 2.3 — Configurar la Conexión al Primario en `postgresql.conf`
+
+En el servidor réplica, edita su propio `postgresql.conf` para indicarle cómo conectarse al primario:
+
+```bash
+sudo nano /etc/postgresql/16/main/postgresql.conf
+```
+
+Modifica o agrega:
+
+```ini
+# ── Información de conexión al primario (PostgreSQL 12+) ────────────────
+primary_conninfo = 'host=192.168.1.10 port=5432 user=replicator password=mi_password_seguro application_name=replica1'
+
+# ── Activar modo de lectura mientras se está replicando ─────────────────
+hot_standby = on
+
+# ── Slot de replicación (opcional pero recomendado) ─────────────────────
+# primary_slot_name = 'replica1_slot'
+```
+
+#### 2.4 — (Opcional) Crear el Replication Slot en el Primario
+
+Si vas a usar un slot (recomendado), créalo antes de iniciar la réplica:
+
+```sql
+-- Ejecutar en el servidor PRIMARIO
+SELECT pg_create_physical_replication_slot('replica1_slot');
+```
+
+#### 2.5 — Iniciar la Réplica
+
+```bash
+sudo systemctl start postgresql
+
+# Ver los logs para verificar que se conectó al primario
+sudo tail -f /var/log/postgresql/postgresql-16-main.log
+
+# Deberías ver algo como:
+# LOG: started streaming WAL from primary at 0/3000000 on timeline 1
+```
+
+---
+
+### PASO 3: Verificar que la Replicación Funciona
+
+#### 3.1 — En el Primario: Ver el Estado de las Réplicas
+
+```sql
+-- Conectarse al primario
+-- Esta vista muestra información de cada WAL Sender activo (una fila por réplica)
+SELECT
+    pid,                    -- PID del proceso WAL Sender en el primario
+    application_name,       -- Nombre de la réplica (application_name del primary_conninfo)
+    client_addr,            -- IP del servidor réplica
+    state,                  -- Estado: 'streaming' es lo que buscamos
+    sent_lsn,               -- Hasta qué WAL ha enviado el primario
+    write_lsn,              -- Hasta qué WAL escribió la réplica en disco
+    flush_lsn,              -- Hasta qué WAL hizo flush la réplica
+    replay_lsn,             -- Hasta qué WAL aplicó (replay) la réplica
+    sync_state              -- 'async' o 'sync'
+FROM pg_stat_replication;
+```
+
+**Salida esperada:**
+```
+ pid  | application_name | client_addr  |   state   |  sent_lsn  | sync_state
+------+------------------+--------------+-----------+------------+------------
+ 1234 | replica1         | 192.168.1.11 | streaming | 0/5000000  | async
+```
+
+#### 3.2 — En la Réplica: Ver el Estado de Recepción
+
+```sql
+-- Conectarse a la réplica
+-- Esta vista muestra el estado del WAL Receiver (solo existe en la réplica)
+SELECT
+    status,              -- 'streaming' = funcionando bien
+    receive_start_lsn,   -- Desde qué posición comenzó a recibir WAL
+    received_lsn,        -- Hasta qué posición ha recibido
+    last_msg_send_time,  -- Último mensaje enviado al primario (heartbeat)
+    last_msg_receipt_time, -- Último mensaje recibido del primario
+    sender_host,         -- IP del primario
+    conninfo             -- Cadena de conexión usada
+FROM pg_stat_wal_receiver;
+```
+
+#### 3.3 — Prueba Funcional: Crear Datos en el Primario y Verificar en la Réplica
+
+```sql
+-- ── En el PRIMARIO ──────────────────────────────────────────────
+CREATE TABLE prueba_replication (
+    id SERIAL PRIMARY KEY,
+    mensaje TEXT,
+    creado_at TIMESTAMP DEFAULT NOW()
+);
+
+INSERT INTO prueba_replication (mensaje)
+VALUES ('Hola desde el primario! 🎉');
+
+-- ── En la RÉPLICA (espera 1-2 segundos) ─────────────────────────
+SELECT * FROM prueba_replication;
+
+-- Si la replicación funciona, verás:
+--  id | mensaje                        | creado_at
+-- ----+--------------------------------+----------------------------
+--   1 | Hola desde el primario! 🎉     | 2025-01-15 10:30:45.123456
+```
+
+---
+
+## 🌐 Arquitectura Global de Replicación
+
+Dependiendo de las necesidades del negocio, se utilizan diferentes topologías. Veamos las más comunes:
+
+### Arquitectura 1: Primario + 1 Réplica (Básica)
+
+La configuración más sencilla. Protección básica ante fallos.
+
+```
+                    ┌─────────────────────────┐
+   Aplicación ─────►│      PRIMARIO           │
+   (Lecturas        │   192.168.1.10:5432     │
+    y Escrituras)   │                         │
+                    └─────────────┬───────────┘
+                                  │ WAL Stream
+                                  ▼
+                    ┌─────────────────────────┐
+                    │   RÉPLICA / STANDBY     │
+                    │   192.168.1.11:5432     │
+                    │   (Solo lectura)        │
+                    └─────────────────────────┘
+```
+
+**Uso típico:** Aplicaciones medianas que necesitan un hot standby para recuperación ante fallos.
+
+---
+
+### Arquitectura 2: Primario + Réplica Síncrona + Réplica Asíncrona
+
+Un balance entre seguridad y rendimiento. La réplica síncrona garantiza que los datos no se pierdan; la asíncrona sirve para escalar lecturas.
+
+```
+                    ┌──────────────────────────────┐
+   Escrituras ─────►│          PRIMARIO            │
+                    │       192.168.1.10           │
+                    └──────┬───────────────┬───────┘
+                           │               │
+             WAL Síncrono  │               │ WAL Asíncrono
+                           ▼               ▼
+           ┌───────────────────┐  ┌──────────────────┐
+           │  RÉPLICA SÍNCRONA │  │ RÉPLICA ASÍNCRONA│
+           │  192.168.1.11     │  │  192.168.1.12    │
+           │  (Hot Standby)    │  │  (Lectura masiva)│
+           └───────────────────┘  └──────────────────┘
+```
+
+**Uso típico:** Aplicaciones financieras o de e-commerce donde no se puede perder ni una transacción, pero también se necesita escalar lecturas.
+
+---
+
+### Arquitectura 3: Replicación en Cascada (Múltiples Réplicas)
+
+Para escalar el número de réplicas sin sobrecargar el primario.
+
+```
+                    ┌──────────────────┐
+   Escrituras ─────►│    PRIMARIO       │
+                    │  192.168.1.10    │
+                    └────────┬─────────┘
+                             │ WAL
+                    ┌────────▼─────────┐
+                    │  RÉPLICA NIVEL 1 │ ◄── Réplica síncrona del primario
+                    │  192.168.1.11    │     (es el hot standby)
+                    └──┬────────────┬──┘
+                       │ WAL        │ WAL
+              ┌────────▼──┐  ┌──────▼──────┐
+              │ RÉPLICA 2 │  │  RÉPLICA 3  │  ◄── Replicas de lectura
+              │ 192.168.1 │  │ 192.168.1.1 │       (dashboards, reportes)
+              │  .12      │  │     3       │
+              └───────────┘  └─────────────┘
+```
+
+**Uso típico:** Empresas con muchos servicios de solo lectura (reportes, dashboards, analítica) que no quieren saturar el primario.
+
+---
+
+### Arquitectura 4: Alta Disponibilidad Multi-Región (Disaster Recovery)
+
+La arquitectura más robusta: réplicas en regiones geográficas diferentes para sobrevivir fallos completos de datacenter.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  DATACENTER PRINCIPAL (Ciudad A)                                 │
+│  ┌────────────────┐            ┌────────────────┐                │
+│  │   PRIMARIO     │───────────►│  RÉPLICA LOCAL │                │
+│  │  (Escrituras)  │  WAL Sync  │  (Hot Standby) │                │
+│  └────────────────┘            └────────────────┘                │
+└────────────────────────────────────┬─────────────────────────────┘
+                                     │ WAL Async (Internet)
+┌────────────────────────────────────▼─────────────────────────────┐
+│  DATACENTER SECUNDARIO (Ciudad B / Cloud Region)                 │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │   RÉPLICA DR (Disaster Recovery)                           │  │
+│  │   Lag aceptado: segundos a minutos                         │  │
+│  │   Activación manual o automática ante fallo del principal  │  │
+│  └────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Uso típico:** Bancos, hospitales, plataformas SaaS críticas que necesitan garantizar continuidad ante desastres.
+
+---
+
+## 📊 Monitoreo de la Replicación
+
+Monitorear la replicación es crítico. El indicador más importante es el **replication lag**: cuánto tiempo o datos le falta aplicar a la réplica.
+
+### Ver el Lag de Replicación en el Primario
+
+```sql
+-- Ver el lag en bytes y en tiempo para cada réplica conectada
+SELECT
+    application_name,
+    client_addr,
+    state,
+    sync_state,
+    -- Lag en bytes: diferencia entre lo que envió y lo que la réplica ya aplicó
+    pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) AS lag_bytes,
+    -- Lag en tiempo (disponible si la réplica reporta su estado)
+    now() - pg_last_xact_replay_timestamp() AS lag_tiempo  -- (en la réplica)
+FROM pg_stat_replication
+ORDER BY lag_bytes DESC;
+```
+
+### Ver el Lag en la Réplica
+
+```sql
+-- Conectarse a la réplica y ejecutar:
+
+-- ¿Cuándo fue la última transacción aplicada?
+SELECT now() - pg_last_xact_replay_timestamp() AS replication_lag;
+
+-- ¿Está en modo standby?
+SELECT pg_is_in_recovery();
+-- TRUE  = es una réplica (en modo recovery/standby)
+-- FALSE = es el primario
+
+-- Posición actual del WAL en la réplica
+SELECT pg_last_wal_receive_lsn()  AS ultimo_recibido,
+       pg_last_wal_replay_lsn()   AS ultimo_aplicado;
+```
+
+### Ver los Replication Slots
+
+```sql
+-- Ver todos los slots y cuánto WAL están reteniendo
+SELECT
+    slot_name,
+    plugin,
+    slot_type,
+    active,
+    -- Si active = FALSE y restart_lsn es muy antiguo, el disco puede llenarse
+    restart_lsn,
+    -- Tamaño aproximado de WAL retenido por este slot
+    pg_size_pretty(
+        pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)
+    ) AS wal_retenido
+FROM pg_replication_slots;
+```
+
+### Eliminar un Slot Obsoleto
+
+```sql
+-- Si una réplica fue eliminada, el slot debe borrarse para liberar espacio WAL
+SELECT pg_drop_replication_slot('replica1_slot');
+```
+
+---
+
+## 🚨 Failover y Promoción de Réplica
+
+**Failover** es el proceso de **promover una réplica a primario** cuando el servidor principal falla. Es la prueba de fuego de toda arquitectura de alta disponibilidad.
+
+### ¿Qué pasa durante un Failover?
+
+```
+  ANTES DEL FALLO:
+
+  Aplicación ──► PRIMARIO (activo) ──► RÉPLICA (standby)
+
+
+  DURANTE EL FALLO:
+
+  Aplicación ──► PRIMARIO (💥 CAÍDO)    RÉPLICA (standby, esperando)
+
+
+  DESPUÉS DEL FAILOVER:
+
+  Aplicación ──► RÉPLICA PROMOVIDA (ahora es el nuevo primario ✅)
+```
+
+### Failover Manual (Promover la Réplica)
+
+```bash
+# ── OPCIÓN 1: Usar pg_ctl (recomendado) ─────────────────────────────────
+# Ejecutar en el servidor RÉPLICA
+sudo -u postgres pg_ctl promote -D /var/lib/postgresql/16/main
+
+# Salida esperada:
+# waiting for server to promote........ done
+# server promoted
+
+
+# ── OPCIÓN 2: Usar la función SQL (PostgreSQL 12+) ───────────────────────
+# Conectarse a la réplica por psql y ejecutar:
+SELECT pg_promote();
+-- Retorna TRUE cuando la promoción fue exitosa
+
+
+# ── OPCIÓN 3: Crear el archivo trigger (PostgreSQL 11 y anterior) ────────
+touch /var/lib/postgresql/16/main/promote_trigger
+# (La ruta del trigger se configura con promote_trigger_file en postgresql.conf)
+```
+
+### ¿Qué hace la Promoción?
+
+1. El servidor réplica **aplica los últimos WAL** que tenga disponibles
+2. **Elimina el archivo `standby.signal`** (ya no está en modo réplica)
+3. **Crea una nueva timeline** (un nuevo "universo" de WAL para diferenciar el antes y el después del failover)
+4. **Comienza a aceptar escrituras** como si fuera el primario original
+
+```sql
+-- Verificar que la promoción fue exitosa
+SELECT pg_is_in_recovery();
+-- Antes del promote: TRUE
+-- Después del promote: FALSE  ← ¡Ahora es el primario!
+```
+
+### Reconectar el Antiguo Primario como Réplica (Después de Reparación)
+
+Cuando el servidor original se recupera, no puede simplemente reconectarse como primario (hay un nuevo primario). Debe convertirse en réplica del nuevo primario:
+
+```bash
+# En el antiguo primario (ahora reparado):
+# 1. Detener PostgreSQL
+sudo systemctl stop postgresql
+
+# 2. Resincronizar datos con pg_rewind (más rápido que hacer un basebackup completo)
+#    pg_rewind sincroniza solo los bloques que difieren entre el viejo primario y el nuevo
+pg_rewind \
+  --target-pgdata=/var/lib/postgresql/16/main \
+  --source-server="host=NUEVO_PRIMARIO port=5432 user=replicator password=xxx"
+
+# 3. Crear standby.signal para que arranque en modo réplica
+touch /var/lib/postgresql/16/main/standby.signal
+
+# 4. Actualizar primary_conninfo para apuntar al nuevo primario
+# nano /etc/postgresql/16/main/postgresql.conf
+# primary_conninfo = 'host=IP_NUEVO_PRIMARIO port=5432 user=replicator ...'
+
+# 5. Iniciar PostgreSQL (ahora como réplica del nuevo primario)
+sudo systemctl start postgresql
+```
+
+### Resumen General de Herramientas de Replicación
+
+| Situación                              | Herramienta / Acción                                   |
+| :------------------------------------- | :----------------------------------------------------- |
+| Inicializar una réplica desde cero     | `pg_basebackup`                                        |
+| Mantener WAL disponible para réplicas  | Replication Slots                                      |
+| Ver el estado de las réplicas          | `pg_stat_replication`                                  |
+| Ver el estado desde la réplica         | `pg_stat_wal_receiver`                                 |
+| Medir el lag de replicación            | `pg_wal_lsn_diff()`, `pg_last_xact_replay_timestamp()` |
+| Promover una réplica a primario        | `pg_ctl promote` / `pg_promote()`                      |
+| Reconectar el ex-primario como réplica | `pg_rewind`                                            |
+| Alta disponibilidad automática (HA)    | Patroni, Repmgr, pg_auto_failover                      |
+
+> 💡 **Nota sobre herramientas de HA automático:** Para entornos de producción que requieren **failover automático** (sin intervención humana), considera usar herramientas como **Patroni** (la más popular), **repmgr** o **pg_auto_failover**. Estas herramientas añaden un coordinador que detecta fallos y orquesta la promoción automáticamente.
+
