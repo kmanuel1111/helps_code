@@ -62,9 +62,12 @@ La idea es que sea **transferible, autoexplicativa y modular**, con ejemplos cla
     - [Replicación Asíncrona](#replicación-asíncrona-el-modo-por-defecto)
     - [Replicación Síncrona](#replicación-síncrona-cero-pérdida-de-datos)
     - [Replicación en Cascada](#replicación-en-cascada-réplica-de-réplica)
+    - [📊 Monitoreo de la Replicación](#-monitoreo-de-la-replicación)
+      - [1. Consultas en el Maestro (Primary)](#1-consultas-en-el-maestro-primary)
+      - [2. Consultas en la Réplica (Standby)](#2-consultas-en-la-réplica-standby)
+      - [⚠️ Solución a errores de WAL en Réplicas](#️-solución-a-errores-de-wal-en-réplicas)
   - [🛠️ Configuración de Streaming Replication (Paso a Paso)](#-configuración-de-streaming-replication-paso-a-paso)
   - [🌐 Arquitectura Global de Replicación](#-arquitectura-global-de-replicación)
-  - [📊 Monitoreo de la Replicación](#-monitoreo-de-la-replicación)
   - [🚨 Failover y Promoción de Réplica](#-failover-y-promoción-de-réplica)
 
 ---
@@ -4688,42 +4691,68 @@ La arquitectura más robusta: réplicas en regiones geográficas diferentes para
 
 ## 📊 Monitoreo de la Replicación
 
-Monitorear la replicación es crítico. El indicador más importante es el **replication lag**: cuánto tiempo o datos le falta aplicar a la réplica.
+Monitorea el **lag** (retraso) para asegurar que tu réplica no esté muy desfasada. PostgreSQL ofrece vistas diferentes según el nodo.
 
-### Ver el Lag de Replicación en el Primario
+### 1. Consultas en el Maestro (Primary)
+Usa `pg_stat_replication` para ver qué réplicas están conectadas.
 
 ```sql
--- Ver el lag en bytes y en tiempo para cada réplica conectada
+-- Estado general de las réplicas y su retraso
 SELECT
-    application_name,
-    client_addr,
-    state,
-    sync_state,
-    -- Lag en bytes: diferencia entre lo que envió y lo que la réplica ya aplicó
+    application_name AS replica,
+    client_addr AS ip,
+    state,         -- Debe ser 'streaming'
+    sync_state,   -- 'async', 'sync' o 'potential'
+    -- Lag en Bytes (Diferencia entre lo enviado y lo aplicado en la réplica)
     pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) AS lag_bytes,
-    -- Lag en tiempo (disponible si la réplica reporta su estado)
-    now() - pg_last_xact_replay_timestamp() AS lag_tiempo  -- (en la réplica)
-FROM pg_stat_replication
-ORDER BY lag_bytes DESC;
+    -- Tiempo de retraso (Lag temporal reportado por la réplica)
+    write_lag,
+    flush_lag,
+    replay_lag
+FROM pg_stat_replication;
 ```
 
-### Ver el Lag en la Réplica
+### 2. Consultas en la Réplica (Standby)
+Como la réplica está en modo "Recovery", usa funciones específicas.
 
 ```sql
--- Conectarse a la réplica y ejecutar:
-
--- ¿Cuándo fue la última transacción aplicada?
-SELECT now() - pg_last_xact_replay_timestamp() AS replication_lag;
-
--- ¿Está en modo standby?
+-- ¿Soy una réplica? (Debe devolver true)
 SELECT pg_is_in_recovery();
--- TRUE  = es una réplica (en modo recovery/standby)
--- FALSE = es el primario
+
+-- Estado del receptor de WAL (WAL Receiver)
+SELECT
+    status,
+    receive_start_lsn,
+    received_lsn,
+    last_msg_receipt_time,
+    sender_host
+FROM pg_stat_wal_receiver;
+
+-- Calcular el lag de tiempo (Cuanto tiempo ha pasado desde la última transacción aplicada)
+SELECT 
+    now() - pg_last_xact_replay_timestamp() AS replication_lag_time,
+    pg_last_xact_replay_timestamp() AS last_data_received;
 
 -- Posición actual del WAL en la réplica
 SELECT pg_last_wal_receive_lsn()  AS ultimo_recibido,
        pg_last_wal_replay_lsn()   AS ultimo_aplicado;
 ```
+
+### ⚠️ Solución a errores de WAL en Réplicas
+
+Si intentas ejecutar `pg_current_wal_lsn()` en una réplica, verás el error:
+> `SQL Error [55000]: ERROR: recovery is in progress. Hint: WAL control functions cannot be executed during recovery.`
+
+Esto es porque una réplica **no tiene puntero de escritura propia**.
+
+**Diferencias de funciones por Nodo:**
+
+| Función | Nodo Maestro | Nodo Réplica |
+| :--- | :---: | :---: |
+| Obtener LSN actual | `pg_current_wal_lsn()` | `pg_last_wal_receive_lsn()` |
+| Obtener LSN aplicado | `pg_last_wal_replay_lsn()` | `pg_last_wal_replay_lsn()` |
+
+> 💡 **Tip para Grafana:** Si tu métrica de `pg_wal_lsn_diff` marca 0 bytes pero hay carga, asegúrate de que el exportador consulte al Maestro o use `pg_last_wal_receive_lsn()` si consulta a la Réplica.
 
 ### Ver los Replication Slots
 
